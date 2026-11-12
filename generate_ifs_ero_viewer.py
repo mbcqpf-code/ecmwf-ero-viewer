@@ -15,6 +15,7 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cfgrib
+import multiurl
 import numpy as np
 from PIL import Image
 import scipy.ndimage as ndimage
@@ -23,6 +24,18 @@ import xarray as xr
 from ecmwf.opendata import Client
 
 warnings.filterwarnings('ignore')
+
+# Override multiurl's hardcoded 120s retry sleep so 503s fail over in seconds
+_orig_multiurl_download = multiurl.download
+
+
+def _fast_failover_download(*args, **kwargs):
+    kwargs.setdefault("retry_after", 4)
+    kwargs.setdefault("max_retries", 3)
+    return _orig_multiurl_download(*args, **kwargs)
+
+
+multiurl.download = _fast_failover_download
 
 # ==========================================
 # 1. CONFIGURATION & DOMAIN GEOMETRY
@@ -36,8 +49,8 @@ CLIMO_PATH = Path("data/era5_conus_pw_percentiles_1950_2025.nc")
 
 MAX_RUNS_TO_KEEP = 10
 MAX_NEW_ENS_RUNS_PER_JOB = 2
-DOWNLOAD_WORKERS = 4
-DATA_SOURCES = ["aws", "azure", "ecmwf"]
+DOWNLOAD_WORKERS = 2  # Gentle concurrency avoids triggering cloud rate limits
+DATA_SOURCES = ["azure", "google", "ecmwf", "aws"]  # Azure is same-cloud as GitHub Actions
 
 LAT_NORTH, LAT_SOUTH = 50.0, 24.0
 LON_WEST, LON_EAST = -125.0, -66.0
@@ -55,8 +68,8 @@ PROJ = ccrs.LambertConformal(central_longitude=-97.5, central_latitude=38.5)
 # ==========================================
 def retrieve_with_fallback(req_dict, target_path, resol="0p25"):
     """
-    Retrieves GRIB2 subset trying AWS S3 Open Data first (fastest from GitHub Actions),
-    with automatic fallback to Azure and ECMWF portals.
+    Retrieves GRIB2 subset trying Azure and Google Cloud Open Data mirrors first,
+    with automatic fast failover to ECMWF and AWS.
     """
     target_path = Path(target_path)
     last_err = None
@@ -409,7 +422,6 @@ def process_ensemble_cycle(init_dt, climo_ds):
     lats, lons, lats_rad, lons_rad, cos_lat = None, None, None, None, None
     tp_prev = None
 
-    # Sliding-window parallel pre-fetch (4 workers) keeps network saturated while limiting disk/RAM
     with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
         futures = {}
         for s in all_steps[:DOWNLOAD_WORKERS * 2]:
