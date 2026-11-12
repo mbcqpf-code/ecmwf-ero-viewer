@@ -15,27 +15,16 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import cfgrib
-import multiurl
 import numpy as np
 from PIL import Image
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import scipy.ndimage as ndimage
 from scipy.ndimage import maximum_filter
 import xarray as xr
-from ecmwf.opendata import Client
 
 warnings.filterwarnings('ignore')
-
-# Override multiurl's hardcoded 120s retry sleep so 503s fail over in seconds
-_orig_multiurl_download = multiurl.download
-
-
-def _fast_failover_download(*args, **kwargs):
-    kwargs.setdefault("retry_after", 4)
-    kwargs.setdefault("max_retries", 3)
-    return _orig_multiurl_download(*args, **kwargs)
-
-
-multiurl.download = _fast_failover_download
 
 # ==========================================
 # 1. CONFIGURATION & DOMAIN GEOMETRY
@@ -49,8 +38,14 @@ CLIMO_PATH = Path("data/era5_conus_pw_percentiles_1950_2025.nc")
 
 MAX_RUNS_TO_KEEP = 10
 MAX_NEW_ENS_RUNS_PER_JOB = 2
-DOWNLOAD_WORKERS = 2  # Gentle concurrency avoids triggering cloud rate limits
-DATA_SOURCES = ["azure", "google", "ecmwf", "aws"]  # Azure is same-cloud as GitHub Actions
+STEP_WORKERS = 3       # Concurrent forecast steps
+RANGE_WORKERS = 8      # Concurrent byte-range reads per GRIB file
+
+# Direct cloud mirrors (Google Cloud Storage primary, AWS S3 backup — bypasses data.ecmwf.int 503 limits)
+CLOUD_MIRRORS = [
+    "https://storage.googleapis.com/ecmwf-open-data",
+    "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com",
+]
 
 LAT_NORTH, LAT_SOUTH = 50.0, 24.0
 LON_WEST, LON_EAST = -125.0, -66.0
@@ -63,30 +58,135 @@ CIRCULAR_FOOTPRINT_3D = ((x_g**2 + y_g**2) <= RADIUS_PTS**2).astype(np.uint8)[np
 PROJ = ccrs.LambertConformal(central_longitude=-97.5, central_latitude=38.5)
 
 
+def make_http_session():
+    session = requests.Session()
+    retry = Retry(
+        total=4,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET"],
+    )
+    adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=retry)
+    session.mount("https://", adapter)
+    session.headers.update({"User-Agent": "ECMWF-IFS-ERO-Viewer/1.0"})
+    return session
+
+
+HTTP = make_http_session()
+
+
 # ==========================================
-# 2. MULTI-MIRROR RETRIEVER & CYCLE RESOLVER
+# 2. DIRECT GCS / S3 INDEX & BYTE-RANGE FETCHER
 # ==========================================
-def retrieve_with_fallback(req_dict, target_path, resol="0p25"):
+def _build_candidate_urls(base_url, date_str, cycle_hr, resol, stream, step):
+    """Returns candidate GRIB2 URLs for 0p25/enfo and 0p1/oper."""
+    prefix = f"{base_url}/{date_str}/{cycle_hr:02d}z/ifs/{resol}/{stream}/{date_str}{cycle_hr:02d}0000-{step}h-{stream}"
+    if stream == "enfo":
+        return [f"{prefix}-ef.grib2"]
+    # 0p1 oper splits surface into -oper-fc-sfc.grib2 (with -oper-fc.grib2 fallback)
+    return [f"{prefix}-fc-sfc.grib2", f"{prefix}-fc.grib2"]
+
+
+def _parse_index_byte_ranges(index_text, req_type, levtype, params, levelist=None):
+    """Extracts sorted, contiguous-coalesced (start, end) byte ranges from ECMWF JSON .index."""
+    raw_ranges = []
+    for line in index_text.strip().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("type") != req_type:
+            continue
+        if rec.get("levtype") != levtype:
+            continue
+        if rec.get("param") not in params:
+            continue
+        if levelist is not None and str(rec.get("levelist")) != str(levelist):
+            continue
+        off = int(rec["_offset"])
+        length = int(rec["_length"])
+        raw_ranges.append((off, off + length - 1))
+
+    if not raw_ranges:
+        return []
+
+    raw_ranges.sort()
+    # Coalesce strictly contiguous ranges (prev_end + 1 == next_start) to minimize HTTP requests
+    coalesced = [raw_ranges[0]]
+    for start, end in raw_ranges[1:]:
+        prev_start, prev_end = coalesced[-1]
+        if start == prev_end + 1:
+            coalesced[-1] = (prev_start, end)
+        else:
+            coalesced.append((start, end))
+    return coalesced
+
+
+def fetch_grib_subset_direct(date_str, cycle_hr, resol, stream, req_type, step, levtype, params, target_path, levelist=None):
     """
-    Retrieves GRIB2 subset trying Azure and Google Cloud Open Data mirrors first,
-    with automatic fast failover to ECMWF and AWS.
+    Fetches matching GRIB2 messages directly via .index + HTTP Range requests
+    from Google Cloud Storage (primary) or AWS S3 (backup).
     """
     target_path = Path(target_path)
+    params_set = set(params)
     last_err = None
-    for src in DATA_SOURCES:
-        try:
-            if target_path.exists():
-                target_path.unlink()
-            client = Client(source=src, model="ifs", resol=resol)
-            client.retrieve(**req_dict, target=str(target_path))
-            if target_path.exists() and target_path.stat().st_size > 1000:
-                return True
-        except Exception as e:
-            last_err = e
-            continue
-    raise RuntimeError(f"Failed to retrieve {req_dict} across {DATA_SOURCES}: {last_err}")
+
+    for base_url in CLOUD_MIRRORS:
+        for grib_url in _build_candidate_urls(base_url, date_str, cycle_hr, resol, stream, step):
+            idx_url = grib_url[:-6] + ".index"
+            try:
+                r_idx = HTTP.get(idx_url, timeout=12)
+                if r_idx.status_code != 200:
+                    continue
+
+                ranges = _parse_index_byte_ranges(r_idx.text, req_type, levtype, params_set, levelist=levelist)
+                if not ranges:
+                    continue
+
+                def _get_chunk(byte_pair):
+                    s, e = byte_pair
+                    resp = HTTP.get(grib_url, headers={"Range": f"bytes={s}-{e}"}, timeout=30)
+                    if resp.status_code not in (200, 206):
+                        raise RuntimeError(f"HTTP {resp.status_code} on range {s}-{e}")
+                    return resp.content
+
+                if len(ranges) == 1:
+                    chunks = [_get_chunk(ranges[0])]
+                else:
+                    with ThreadPoolExecutor(max_workers=RANGE_WORKERS) as rpool:
+                        chunks = list(rpool.map(_get_chunk, ranges))
+
+                with open(target_path, "wb") as f:
+                    for c in chunks:
+                        f.write(c)
+
+                if target_path.exists() and target_path.stat().st_size > 1000:
+                    return True
+            except Exception as e:
+                last_err = e
+                if target_path.exists():
+                    target_path.unlink()
+                continue
+
+    raise RuntimeError(f"Failed direct cloud fetch for {date_str} {cycle_hr:02d}Z F{step:03d} ({resol}/{stream}): {last_err}")
 
 
+def is_ecmwf_step_ready(date_str, cycle_hr, stream, req_type, step_num, resol="0p25"):
+    """Checks via HTTP HEAD on the .index file whether the cycle has published through step_num."""
+    for base_url in CLOUD_MIRRORS:
+        for grib_url in _build_candidate_urls(base_url, date_str, cycle_hr, resol, stream, step_num):
+            idx_url = grib_url[:-6] + ".index"
+            try:
+                r = HTTP.head(idx_url, timeout=8)
+                if r.status_code == 200:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+# ==========================================
+# 3. DYNAMIC CYCLE & PERIOD RESOLVER
+# ==========================================
 def build_synoptic_periods(init_dt):
     """
     Constructs Day 1-5 synoptic periods anchored strictly to 12Z-to-12Z valid windows:
@@ -119,30 +219,6 @@ def build_synoptic_periods(init_dt):
             "midpoint_doy": (v_s + timedelta(hours=12)).timetuple().tm_yday,
         })
     return periods
-
-
-def is_ecmwf_step_ready(date_str, cycle_hr, stream, req_type, step_num, resol="0p25"):
-    """Probes Open Data mirrors to verify whether the cycle has disseminated through step_num."""
-    probe_file = WORKDIR / f"probe_{stream}_{date_str}_{cycle_hr:02d}_f{step_num}.grib2"
-    req = {
-        "date": date_str,
-        "time": cycle_hr,
-        "stream": stream,
-        "type": req_type,
-        "levtype": "sfc",
-        "step": step_num,
-        "param": "tp",
-    }
-    if req_type == "pf":
-        req["number"] = 1
-    try:
-        ready = retrieve_with_fallback(req, probe_file, resol=resol)
-    except Exception:
-        ready = False
-    finally:
-        if probe_file.exists():
-            probe_file.unlink()
-    return ready
 
 
 def read_cycle_status(cycle_id):
@@ -201,7 +277,7 @@ def get_pending_and_available_cycles(max_lookback_hours=36):
 
 
 # ==========================================
-# 3. COLORMAPS & GRAPHICS RENDERING SYSTEM
+# 4. COLORMAPS & GRAPHICS RENDERING SYSTEM
 # ==========================================
 PROB_BOUNDS = [5, 10, 15, 20, 30, 40, 50, 70, 90]
 PROB_COLORS = ["#7bed9f", "#2ed573", "#ffeaa7", "#fdcb6e", "#f39c12", "#e17055", "#d63031", "#e84393", "#8e44ad"]
@@ -345,7 +421,7 @@ def render_mfc850_plot(imfc_data, mean_qu, mean_qv, prob_persist, lats, lons, ti
 
 
 # ==========================================
-# 4. CLIMATOLOGY PERCENTILE RANK HELPER
+# 5. CLIMATOLOGY PERCENTILE RANK HELPER
 # ==========================================
 def compute_pw_percentile_rank(pw_fcst_2d, pct_vals, thresh_3d):
     rank = np.full_like(pw_fcst_2d, 50.0, dtype=np.float32)
@@ -360,26 +436,24 @@ def compute_pw_percentile_rank(pw_fcst_2d, pct_vals, thresh_3d):
 
 
 # ==========================================
-# 5. ENSEMBLE (0.25°) & 9KM DETERMINISTIC ENGINES
+# 6. ENSEMBLE (0.25°) & 9KM DETERMINISTIC ENGINES
 # ==========================================
 def _fetch_ens_step_files(date_str, cycle_hr, cycle_id, step):
     sfc_file = WORKDIR / f"ens_sfc_{cycle_id}_f{step:03d}.grib2"
     pl_file = WORKDIR / f"ens_pl_{cycle_id}_f{step:03d}.grib2"
-    retrieve_with_fallback(
-        {"date": date_str, "time": cycle_hr, "stream": "enfo", "type": "pf",
-         "levtype": "sfc", "step": step, "param": ["tp", "mucape", "tcwv"]},
-        sfc_file, resol="0p25"
+    fetch_grib_subset_direct(
+        date_str, cycle_hr, "0p25", "enfo", "pf", step,
+        levtype="sfc", params=["tp", "mucape", "tcwv"], target_path=sfc_file
     )
-    retrieve_with_fallback(
-        {"date": date_str, "time": cycle_hr, "stream": "enfo", "type": "pf",
-         "levtype": "pl", "levelist": 850, "step": step, "param": ["u", "v", "q"]},
-        pl_file, resol="0p25"
+    fetch_grib_subset_direct(
+        date_str, cycle_hr, "0p25", "enfo", "pf", step,
+        levtype="pl", params=["u", "v", "q"], target_path=pl_file, levelist=850
     )
     return sfc_file, pl_file
 
 
 def _read_surface_vars_single_pass(sfc_file):
-    """Decodes tp, mucape, and tcwv in one cfgrib scan (~3x faster than 3 separate opens)."""
+    """Decodes tp, mucape, and tcwv in one cfgrib scan."""
     datasets = cfgrib.open_datasets(str(sfc_file), backend_kwargs={"indexpath": ""})
     extracted = {}
     lats_out, lons_out = None, None
@@ -422,14 +496,14 @@ def process_ensemble_cycle(init_dt, climo_ds):
     lats, lons, lats_rad, lons_rad, cos_lat = None, None, None, None, None
     tp_prev = None
 
-    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=STEP_WORKERS) as pool:
         futures = {}
-        for s in all_steps[:DOWNLOAD_WORKERS * 2]:
+        for s in all_steps[:STEP_WORKERS * 2]:
             futures[s] = pool.submit(_fetch_ens_step_files, date_str, cycle_hr, cycle_id, s)
 
         for idx, step in enumerate(all_steps):
             t_s = time.time()
-            ahead_idx = idx + DOWNLOAD_WORKERS * 2
+            ahead_idx = idx + STEP_WORKERS * 2
             if ahead_idx < len(all_steps):
                 ahead_step = all_steps[ahead_idx]
                 futures[ahead_step] = pool.submit(_fetch_ens_step_files, date_str, cycle_hr, cycle_id, ahead_step)
@@ -629,10 +703,9 @@ def process_ensemble_cycle(init_dt, climo_ds):
 
 def _fetch_det_step_file(date_str, cycle_hr, cycle_id, step):
     fname = WORKDIR / f"det_tp_{cycle_id}_f{step:03d}.grib2"
-    retrieve_with_fallback(
-        {"date": date_str, "time": cycle_hr, "stream": "oper", "type": "fc",
-         "levtype": "sfc", "step": step, "param": "tp"},
-        fname, resol="0p1"
+    fetch_grib_subset_direct(
+        date_str, cycle_hr, "0p1", "oper", "fc", step,
+        levtype="sfc", params=["tp"], target_path=fname
     )
     return fname
 
@@ -653,7 +726,7 @@ def process_deterministic_9km_cycle(init_dt):
     day_max_qpf = {}
     lats, lons, tp_prev = None, None, None
 
-    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=STEP_WORKERS) as pool:
         futures = {
             s: pool.submit(_fetch_det_step_file, date_str, cycle_hr, cycle_id, s)
             for s in all_steps
@@ -700,7 +773,7 @@ def process_deterministic_9km_cycle(init_dt):
 
 
 # ==========================================
-# 6. MANIFEST & FRONTEND HTML BUILDER
+# 7. MANIFEST & FRONTEND HTML BUILDER
 # ==========================================
 def update_manifest_and_html():
     all_runs = sorted([
