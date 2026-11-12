@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import cfgrib
 import numpy as np
 from PIL import Image
 import scipy.ndimage as ndimage
@@ -364,6 +365,30 @@ def _fetch_ens_step_files(date_str, cycle_hr, cycle_id, step):
     return sfc_file, pl_file
 
 
+def _read_surface_vars_single_pass(sfc_file):
+    """Decodes tp, mucape, and tcwv in one cfgrib scan (~3x faster than 3 separate opens)."""
+    datasets = cfgrib.open_datasets(str(sfc_file), backend_kwargs={"indexpath": ""})
+    extracted = {}
+    lats_out, lons_out = None, None
+    try:
+        for ds in datasets:
+            w_lon = LON_WEST % 360.0 if ds.longitude.max() > 180 else LON_WEST
+            e_lon = LON_EAST % 360.0 if ds.longitude.max() > 180 else LON_EAST
+            for var_name in ("tp", "mucape", "tcwv"):
+                if var_name in ds:
+                    da = ds[var_name].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+                    if da.longitude.max() > 180:
+                        da = da.assign_coords(longitude=da.longitude - 360.0)
+                    extracted[var_name] = da.values.astype(np.float32)
+                    if lats_out is None:
+                        lats_out = da.latitude.values
+                        lons_out = da.longitude.values
+    finally:
+        for ds in datasets:
+            ds.close()
+    return extracted["tp"], extracted["mucape"], extracted["tcwv"] / 25.4, lats_out, lons_out
+
+
 def process_ensemble_cycle(init_dt, climo_ds):
     cycle_id = init_dt.strftime("%Y%m%d_%H")
     date_str = init_dt.strftime("%Y%m%d")
@@ -387,13 +412,11 @@ def process_ensemble_cycle(init_dt, climo_ds):
     # Sliding-window parallel pre-fetch (4 workers) keeps network saturated while limiting disk/RAM
     with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
         futures = {}
-        # Prime initial batch of workers
         for s in all_steps[:DOWNLOAD_WORKERS * 2]:
             futures[s] = pool.submit(_fetch_ens_step_files, date_str, cycle_hr, cycle_id, s)
 
         for idx, step in enumerate(all_steps):
             t_s = time.time()
-            # Submit next step ahead so workers stay busy
             ahead_idx = idx + DOWNLOAD_WORKERS * 2
             if ahead_idx < len(all_steps):
                 ahead_step = all_steps[ahead_idx]
@@ -401,20 +424,11 @@ def process_ensemble_cycle(init_dt, climo_ds):
 
             sfc_file, pl_file = futures.pop(step).result()
 
-            with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tp"}, "indexpath": ""}) as ds_tp:
-                w_lon = LON_WEST % 360.0 if ds_tp.longitude.max() > 180 else LON_WEST
-                e_lon = LON_EAST % 360.0 if ds_tp.longitude.max() > 180 else LON_EAST
-                tp_da = ds_tp["tp"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
-                if tp_da.longitude.max() > 180:
-                    tp_da = tp_da.assign_coords(longitude=tp_da.longitude - 360.0)
-
-            with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "mucape"}, "indexpath": ""}) as ds_cape:
-                cape_da = ds_cape["mucape"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
-
-            with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tcwv"}, "indexpath": ""}) as ds_pw:
-                pw_da = ds_pw["tcwv"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+            tp_curr, cape_curr, pw_curr, step_lats, step_lons = _read_surface_vars_single_pass(sfc_file)
 
             with xr.open_dataset(pl_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa", "level": 850}, "indexpath": ""}) as ds_pl:
+                w_lon = LON_WEST % 360.0 if ds_pl.longitude.max() > 180 else LON_WEST
+                e_lon = LON_EAST % 360.0 if ds_pl.longitude.max() > 180 else LON_EAST
                 pl_sub = ds_pl[["u", "v", "q"]].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
                 q_gkg = pl_sub["q"].values.astype(np.float32) * 1000.0
                 u_ms = pl_sub["u"].values.astype(np.float32)
@@ -423,13 +437,9 @@ def process_ensemble_cycle(init_dt, climo_ds):
             sfc_file.unlink(missing_ok=True)
             pl_file.unlink(missing_ok=True)
 
-            tp_curr = tp_da.values.astype(np.float32)
-            cape_curr = cape_da.values.astype(np.float32)
-            pw_curr = pw_da.values.astype(np.float32) / 25.4  # inches
-
             if lats is None:
-                lats = tp_da.latitude.values
-                lons = tp_da.longitude.values
+                lats = step_lats
+                lons = step_lons
                 lats_rad = np.deg2rad(lats)
                 lons_rad = np.deg2rad(lons)
                 cos_lat = np.cos(lats_rad)[np.newaxis, :, np.newaxis]
@@ -681,7 +691,11 @@ def process_deterministic_9km_cycle(init_dt):
 # 6. MANIFEST & FRONTEND HTML BUILDER
 # ==========================================
 def update_manifest_and_html():
-    all_runs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()], reverse=True)
+    all_runs = sorted([
+        d for d in os.listdir(RUNS_DIR)
+        if (RUNS_DIR / d).is_dir() and read_cycle_status(d).get("ens_complete")
+    ], reverse=True)
+
     if len(all_runs) > MAX_RUNS_TO_KEEP:
         for old in all_runs[MAX_RUNS_TO_KEEP:]:
             shutil.rmtree(RUNS_DIR / old, ignore_errors=True)
@@ -1279,7 +1293,10 @@ def run_production():
     print("CHECKING FOR ECMWF IFS CYCLES TO PROCESS...")
     print("==========================================")
 
-    existing_dirs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()])
+    existing_dirs = sorted([
+        d for d in os.listdir(RUNS_DIR)
+        if (RUNS_DIR / d).is_dir() and read_cycle_status(d).get("ens_complete")
+    ])
     pending_cycles = get_pending_and_available_cycles(max_lookback_hours=36)
 
     # First-run bootstrap: grab ONLY the single newest available cycle (no backfill)
@@ -1301,10 +1318,13 @@ def run_production():
         print("All recent available 0.25° ensemble cycles are already cached.")
 
     # Second independent pass: check if 9km (0.1°) deterministic is ready for any cached run
-    all_runs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()])
+    all_runs = sorted([
+        d for d in os.listdir(RUNS_DIR)
+        if (RUNS_DIR / d).is_dir() and read_cycle_status(d).get("ens_complete")
+    ])
     for cycle_id in all_runs:
         status = read_cycle_status(cycle_id)
-        if not status.get("ens_complete") or status.get("det_complete"):
+        if status.get("det_complete"):
             continue
 
         init_dt = datetime.strptime(cycle_id, "%Y%m%d_%H").replace(tzinfo=timezone.utc)
