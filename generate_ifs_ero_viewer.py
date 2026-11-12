@@ -833,63 +833,114 @@ def build_frontend_html(dest_path):
     :root {
       --bg: #090d16;
       --panel: #131b2e;
+      --pod-bg: #0d1424;
       --border: #232f48;
       --text: #f1f5f9;
       --muted: #94a3b8;
       --accent: #2563eb;
       --accent-hover: #3b82f6;
     }
+    * { box-sizing: border-box; }
     body {
       margin: 0; background: var(--bg); color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex; flex-direction: column; align-items: center;
+      padding: 0 12px;
     }
-    .header { width: 100%; max-width: 1320px; padding: 10px 16px 2px 16px; text-align: center; }
-    .header h2 { margin: 0 0 2px 0; font-size: 1.25rem; }
-    .header p { margin: 0; color: var(--muted); font-size: 0.8rem; }
 
+    /* Compact Top Header with Layout Controls */
+    .header {
+      width: 100%; max-width: 1320px;
+      padding: 10px 4px 6px 4px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 10px;
+    }
+    .header-titles { text-align: left; }
+    .header h2 { margin: 0 0 2px 0; font-size: 1.18rem; letter-spacing: 0.1px; }
+    .header p { margin: 0; color: var(--muted); font-size: 0.78rem; }
+
+    /* Main Control Card */
     .toolbar {
-      width: 100%; max-width: 1320px; background: var(--panel); border: 1px solid var(--border);
-      border-radius: 8px; padding: 8px 12px; margin: 6px 0 8px 0; box-sizing: border-box;
-      display: flex; flex-direction: column; gap: 6px;
+      width: 100%; max-width: 1320px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 12px; margin-bottom: 10px;
+      display: flex; flex-direction: column; gap: 8px;
     }
     .row {
-      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 8px;
     }
     .btn-group {
       display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
     }
-    .btn-group b {
-      font-size: 11.5px; color: #e2e8f0; margin-right: 2px; white-space: nowrap;
+    .group-label {
+      font-size: 11.5px; font-weight: 700; color: #e2e8f0;
+      margin-right: 3px; white-space: nowrap;
     }
+
+    /* Buttons & Selects */
     .btn {
       background: #1e293b; color: #cbd5e1; border: 1px solid var(--border);
-      padding: 4px 8px; border-radius: 4px; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: 0.15s;
-      white-space: nowrap; line-height: 1.3;
+      padding: 4px 9px; border-radius: 4px; font-size: 11.5px; font-weight: 600;
+      cursor: pointer; transition: 0.14s; white-space: nowrap; line-height: 1.3;
     }
-    .btn:hover:not(:disabled) { background: #334155; color: #fff; }
+    .btn:hover:not(:disabled) { background: #334155; color: #fff; border-color: #475569; }
     .btn.active { background: var(--accent); color: #fff; border-color: var(--accent-hover); }
     .btn:disabled {
       opacity: 0.35; cursor: not-allowed; border-color: #1e293b; color: #64748b;
     }
-    .btn-det { background: #1e3a29; border-color: #2e593e; color: #a7f3d0; }
-    .btn-det:hover:not(:disabled) { background: #264e37; color: #fff; }
+    .btn-det { background: #163326; border-color: #26543f; color: #6ee7b7; }
+    .btn-det:hover:not(:disabled) { background: #1f4735; color: #fff; }
     .btn-det.active { background: #059669; border-color: #10b981; color: #fff; }
-    .btn-help { background: #334155; color: #93c5fd; border-color: #475569; }
-    .btn-help:hover { background: #475569; color: #fff; }
-
-    .toolbar-divider {
-      border-left: 1px solid var(--border);
-      margin: 0 3px;
-      height: 16px;
-      display: inline-block;
-    }
+    .btn-help { background: #1e293b; color: #7dd3fc; border-color: #334155; }
+    .btn-help:hover { background: #334155; color: #fff; }
 
     select {
       background: #0f172a; color: #fff; border: 1px solid var(--border);
-      padding: 3px 7px; border-radius: 4px; font-size: 11.5px; cursor: pointer;
+      padding: 4px 8px; border-radius: 4px; font-size: 11.5px; font-weight: 600; cursor: pointer;
     }
 
+    /* Categorized Product Pods */
+    .product-grid {
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: stretch;
+    }
+    .prod-pod {
+      background: var(--pod-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+      transition: border-color 0.15s;
+    }
+    .prod-pod.active-pod {
+      border-color: #3b82f6;
+      background: #10192e;
+    }
+    .pod-title {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #60a5fa;
+      padding-right: 4px;
+      border-right: 1px solid var(--border);
+      margin-right: 1px;
+      white-space: nowrap;
+    }
+    .prod-pod .btn {
+      padding: 3px 8px;
+      font-size: 11.5px;
+    }
+
+    /* Viewer Stage */
     .viewer-container {
       width: 100%; max-width: 1320px; display: flex; gap: 12px; justify-content: center;
     }
@@ -905,6 +956,7 @@ def build_frontend_html(dest_path):
     }
     .viewer-card img { width: 100%; height: auto; display: block; }
 
+    /* Modal Help Styling */
     .modal-overlay {
       display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: rgba(0, 0, 0, 0.75); z-index: 9999; justify-content: center; align-items: center;
@@ -933,70 +985,49 @@ def build_frontend_html(dest_path):
     .help-item:last-child { margin-bottom: 0; }
     .help-item b { color: #e2e8f0; }
 
-    .footer { margin: 10px 0 18px 0; color: var(--muted); font-size: 11.5px; }
+    .footer { margin: 10px 0 18px 0; color: var(--muted); font-size: 11.5px; text-align: center; }
     kbd { background: #1e293b; border: 1px solid #334155; padding: 2px 5px; border-radius: 3px; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h2>ECMWF IFS Day 1–5 Excessive Rainfall & Moisture Guidance</h2>
-    <p id="subStatus">50-Member 0.25° Ensemble + 9 km (0.1°) Deterministic IFS</p>
+    <div class="header-titles">
+      <h2>ECMWF IFS Day 1–5 Excessive Rainfall &amp; Moisture Guidance</h2>
+      <p id="subStatus">50-Member 0.25° Ensemble + 9 km (0.1°) Deterministic IFS</p>
+    </div>
+    <div class="btn-group">
+      <span class="group-label">View:</span>
+      <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
+      <button class="btn" id="btnSplit" onclick="setLayout('split')">Split</button>
+      <button class="btn btn-help" onclick="toggleHelpModal(true)" title="View explanation of products (Shortcut: ? or H)">ℹ️ Guide</button>
+    </div>
   </div>
 
   <div class="toolbar" id="mainToolbar">
+    <!-- ROW 1: Temporal Controls -->
     <div class="row">
       <div class="btn-group">
-        <b>Model Run:</b>
+        <span class="group-label">Model Run:</span>
         <button class="btn" id="btnNewer" onclick="stepRun(-1)" title="Step to newer run (Arrow Up)">▲ Newer</button>
         <select id="runSelect" onchange="onMainRunChange()"></select>
         <button class="btn" id="btnOlder" onclick="stepRun(1)" title="Step to older run (Arrow Down)">▼ Older</button>
       </div>
 
       <div class="btn-group" id="periodBox">
-        <b>Valid Period:</b>
+        <span class="group-label">Valid Period (12Z–12Z):</span>
         <div id="periodButtons" class="btn-group"></div>
       </div>
     </div>
 
-    <div class="row" style="border-top: 1px solid var(--border); padding-top: 6px;">
-      <div class="btn-group" id="productGroup">
-        <b>Product:</b>
-        <button class="btn" data-prod="qpf_prob_050" onclick="setProduct(this)">0.5" 3h</button>
-        <button class="btn active" data-prod="qpf_prob_100" onclick="setProduct(this)">1.0" 3h</button>
-        <button class="btn" data-prod="qpf_prob_150" onclick="setProduct(this)">1.5" 3h</button>
-        <button class="btn" data-prod="qpf_prob_200" onclick="setProduct(this)">2.0" 3h</button>
-        <button class="btn" data-prod="qpf_p90" onclick="setProduct(this)">90th QPF</button>
-        <button class="btn btn-det" data-prod="qpf_det_9km" onclick="setProduct(this)">9km 3h</button>
-        <span class="toolbar-divider"></span>
-        <button class="btn" data-prod="cape_mean" onclick="setProduct(this)">CAPE Mean</button>
-        <button class="btn" data-prod="cape_p90" onclick="setProduct(this)">CAPE 90th</button>
-        <span class="toolbar-divider"></span>
-        <button class="btn" data-prod="pw_mean" onclick="setProduct(this)">PW Mean</button>
-        <button class="btn" data-prod="pw_p90" onclick="setProduct(this)">PW 90th</button>
-        <span class="toolbar-divider"></span>
-        <button class="btn" data-prod="pw_anom_mean" onclick="setProduct(this)">PW Pct (Mean)</button>
-        <button class="btn" data-prod="pw_anom_p90" onclick="setProduct(this)">PW Pct (90th)</button>
-        <button class="btn" data-prod="pw_prob_p90" onclick="setProduct(this)">Prob &gt;90th</button>
-        <button class="btn" data-prod="pw_prob_p99" onclick="setProduct(this)">Prob &gt;99th</button>
-        <span class="toolbar-divider"></span>
-        <button class="btn" data-prod="mfc850_mean" onclick="setProduct(this)">850 MFC Mean</button>
-        <button class="btn" data-prod="mfc850_p90" onclick="setProduct(this)">850 MFC 90th</button>
-      </div>
-
-      <div class="btn-group">
-        <b>Layout:</b>
-        <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
-        <button class="btn" id="btnSplit" onclick="setLayout('split')">Split</button>
-        <button class="btn btn-help" onclick="toggleHelpModal(true)" title="View explanation of products (Shortcut: ? or H)">ℹ️ Guide</button>
-      </div>
-    </div>
+    <!-- ROW 2: Categorized Parameter Pods -->
+    <div class="product-grid" id="productGrid"></div>
   </div>
 
   <div class="viewer-container" id="viewerContainer">
     <div class="viewer-card" id="cardPrimary">
       <div class="pane-toolbar" id="pane1Bar">
         <span style="font-weight:bold; color:#60a5fa;">Pane 1 (Left):</span>
-        <div style="display:flex; gap:6px; align-items:center;">
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           <select id="pane1Run" onchange="onPane1RunChange()"></select>
           <select id="pane1Period" onchange="updatePane1()"></select>
           <select id="pane1Prod" onchange="updatePane1()"></select>
@@ -1008,7 +1039,7 @@ def build_frontend_html(dest_path):
     <div class="viewer-card" id="cardSecondary" style="display:none;">
       <div class="pane-toolbar" id="pane2Bar">
         <span style="font-weight:bold; color:#f59e0b;">Pane 2 (Right):</span>
-        <div style="display:flex; gap:6px; align-items:center;">
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           <select id="pane2Run" onchange="onPane2RunChange()"></select>
           <select id="pane2Period" onchange="updatePane2()"></select>
           <select id="pane2Prod" onchange="updatePane2()"></select>
@@ -1026,42 +1057,42 @@ def build_frontend_html(dest_path):
       </div>
       <div class="help-grid">
         <div class="help-section">
-          <h4>🌧️ 24-hr Max 3-hr QPF (0.25° 50-Member Ensemble & 9 km Deterministic)</h4>
+          <h4>🌧️ 3-Hr QPF (24-hr Max 3-Hourly Rate — 0.25° ENS &amp; 9 km DET)</h4>
           <div class="help-item">
-            <b>0.5", 1.0", 1.5", 2.0" 3h Probabilities:</b> 50-km (~2 grid-cell) neighborhood probability that a member's peak 3-hourly rainfall rate exceeds the threshold during the 12Z–12Z synoptic window.
+            <b>0.5", 1.0", 1.5", 2.0":</b> 50-km (~2 grid-cell) neighborhood probability that a member's peak 3-hourly rainfall rate exceeds the threshold during the 12Z–12Z synoptic window.
           </div>
           <div class="help-item">
-            <b>90th QPF:</b> 90th percentile of the 50-km neighborhood maximum 3-hourly QPF across all 50 members (reasonable worst-case intensity ceiling).
+            <b>90th Pct:</b> 90th percentile of the 50-km neighborhood maximum 3-hourly QPF across all 50 members (reasonable worst-case intensity ceiling).
           </div>
           <div class="help-item">
-            <b>9km 3h:</b> High-resolution 0.1° (~9 km) deterministic IFS 24-hour maximum 3-hourly rainfall rate. Disseminated ~2 hours after the 0.25° ensemble and backfilled automatically.
-          </div>
-        </div>
-
-        <div class="help-section">
-          <h4>⚡ Convective Instability (MUCAPE)</h4>
-          <div class="help-item">
-            <b>CAPE Mean & CAPE 90th:</b> Ensemble mean and 90th percentile of each member's 24-hour maximum Most Unstable CAPE (J/kg), highlighting both surface-based warm sectors and elevated nocturnal instability.
+            <b>9km Det:</b> High-resolution 0.1° (~9 km) deterministic IFS 24-hour maximum 3-hourly rainfall rate. Disseminated ~2 hours after the 0.25° ensemble and backfilled automatically.
           </div>
         </div>
 
         <div class="help-section">
-          <h4>💧 Precipitable Water & ERA5 1950–2025 Climatological Percentiles</h4>
+          <h4>⚡ MUCAPE (24-hr Max Instability)</h4>
           <div class="help-item">
-            <b>PW Mean & PW 90th:</b> Ensemble mean and 90th percentile 24-hour maximum Precipitable Water (inches).
-          </div>
-          <div class="help-item">
-            <b>PW Pct (Mean) & PW Pct (90th):</b> Exact historical percentile rank (75th–100th) of the forecast PW plume compared against 76 years (1950–2025) of ERA5 daily max PW within a 15-day moving calendar window.
-          </div>
-          <div class="help-item">
-            <b>Prob &gt;90th & Prob &gt;99th:</b> Percentage of ensemble members exceeding the local climatological 90th or 99th percentile PW threshold.
+            <b>Mean &amp; 90th Pct:</b> Ensemble mean and 90th percentile of each member's 24-hour maximum Most Unstable CAPE (J/kg), highlighting both surface-based warm sectors and elevated nocturnal instability.
           </div>
         </div>
 
         <div class="help-section">
-          <h4>🌬️ 850 hPa Moisture Transport Convergence & Persistence</h4>
+          <h4>💧 PWAT (Raw Inches &amp; ERA5 1950–2025 Climatological Percentiles)</h4>
           <div class="help-item">
-            <b>850 MFC Mean & 90th:</b> Time-integrated positive 850 hPa Moisture Flux Convergence (g/kg) over 24 hours, overlaid with 24-hour vector-mean moisture transport (qV) arrows and magenta contours where ≥30% / ≥60% of members sustain strong convergent transport (|qV| ≥ 150 g/kg·m/s and MFC ≥ 0.5 g/kg/hr) for ≥9 hours—highlighting anchored LLJ noses favorable for training/backbuilding.
+            <b>PWAT (in) — Mean &amp; 90th Pct:</b> Ensemble mean and 90th percentile 24-hour maximum Precipitable Water (inches).
+          </div>
+          <div class="help-item">
+            <b>PWAT Climo — Mean Rank &amp; 90th Rank:</b> Exact historical percentile rank (75th–100th) of the forecast PW plume compared against 76 years (1950–2025) of ERA5 daily max PW within a 15-day moving calendar window.
+          </div>
+          <div class="help-item">
+            <b>PWAT Climo — Prob &gt;90th &amp; Prob &gt;99th:</b> Percentage of ensemble members exceeding the local climatological 90th or 99th percentile PW threshold.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🌬️ 850 hPa Moisture Flux Convergence &amp; Transport</h4>
+          <div class="help-item">
+            <b>Mean &amp; 90th Pct:</b> Time-integrated positive 850 hPa Moisture Flux Convergence (g/kg) over 24 hours, overlaid with 24-hour vector-mean moisture transport (qV) arrows and magenta contours where ≥30% / ≥60% of members sustain strong convergent transport (|qV| ≥ 150 g/kg·m/s and MFC ≥ 0.5 g/kg/hr) for ≥9 hours—highlighting anchored LLJ noses favorable for training/backbuilding.
           </div>
         </div>
       </div>
@@ -1069,7 +1100,7 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="footer">
-    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt with Valid Time Lock) | <kbd>S</kbd> Split | <kbd>?</kbd> Help.
+    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Step Product &nbsp;|&nbsp; <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt with Valid Time Lock) &nbsp;|&nbsp; <kbd>S</kbd> Split View &nbsp;|&nbsp; <kbd>?</kbd> Guide
   </div>
 
   <script>
@@ -1081,26 +1112,77 @@ def build_frontend_html(dest_path):
     let layoutMode = 'single';
     const preloadedImages = new Map();
 
-    const PRODUCTS = [
-      { id: 'qpf_prob_050', name: '0.5" 3h' },
-      { id: 'qpf_prob_100', name: '1.0" 3h' },
-      { id: 'qpf_prob_150', name: '1.5" 3h' },
-      { id: 'qpf_prob_200', name: '2.0" 3h' },
-      { id: 'qpf_p90', name: '90th QPF' },
-      { id: 'qpf_det_9km', name: '9km 3h' },
-      { id: 'cape_mean', name: 'CAPE Mean' },
-      { id: 'cape_p90', name: 'CAPE 90th' },
-      { id: 'pw_mean', name: 'PW Mean' },
-      { id: 'pw_p90', name: 'PW 90th' },
-      { id: 'pw_anom_mean', name: 'PW Pct (Mean)' },
-      { id: 'pw_anom_p90', name: 'PW Pct (90th)' },
-      { id: 'pw_prob_p90', name: 'Prob >90th' },
-      { id: 'pw_prob_p99', name: 'Prob >99th' },
-      { id: 'mfc850_mean', name: '850 MFC Mean' },
-      { id: 'mfc850_p90', name: '850 MFC 90th' }
+    const PRODUCT_GROUPS = [
+      {
+        group: '3-Hr QPF',
+        items: [
+          { id: 'qpf_prob_050', name: '0.5"', fullName: 'QPF ≥ 0.5" (3h)' },
+          { id: 'qpf_prob_100', name: '1.0"', fullName: 'QPF ≥ 1.0" (3h)' },
+          { id: 'qpf_prob_150', name: '1.5"', fullName: 'QPF ≥ 1.5" (3h)' },
+          { id: 'qpf_prob_200', name: '2.0"', fullName: 'QPF ≥ 2.0" (3h)' },
+          { id: 'qpf_p90',      name: '90th Pct', fullName: '90th Pct 3h QPF' },
+          { id: 'qpf_det_9km',  name: '9km Det', fullName: '9km Det 3h QPF', isDet: true }
+        ]
+      },
+      {
+        group: 'MUCAPE',
+        items: [
+          { id: 'cape_mean', name: 'Mean', fullName: 'MUCAPE Mean' },
+          { id: 'cape_p90',  name: '90th Pct', fullName: 'MUCAPE 90th Pct' }
+        ]
+      },
+      {
+        group: '850 MFC',
+        items: [
+          { id: 'mfc850_mean', name: 'Mean', fullName: '850 MFC Mean' },
+          { id: 'mfc850_p90',  name: '90th Pct', fullName: '850 MFC 90th Pct' }
+        ]
+      },
+      {
+        group: 'PWAT (in)',
+        items: [
+          { id: 'pw_mean', name: 'Mean', fullName: 'PWAT Mean (in)' },
+          { id: 'pw_p90',  name: '90th Pct', fullName: 'PWAT 90th Pct (in)' }
+        ]
+      },
+      {
+        group: 'PWAT Climo (ERA5)',
+        items: [
+          { id: 'pw_anom_mean', name: 'Mean Rank', fullName: 'PW Climo Rank (Mean)' },
+          { id: 'pw_anom_p90',  name: '90th Rank', fullName: 'PW Climo Rank (90th)' },
+          { id: 'pw_prob_p90',  name: 'Prob >90th', fullName: 'Prob PW > 90th Pct' },
+          { id: 'pw_prob_p99',  name: 'Prob >99th', fullName: 'Prob PW > 99th Pct' }
+        ]
+      }
     ];
 
+    const PRODUCTS = PRODUCT_GROUPS.flatMap(g => g.items);
+
+    function renderProductPods() {
+      const grid = document.getElementById('productGrid');
+      grid.innerHTML = PRODUCT_GROUPS.map((grp, gIdx) => {
+        const hasActive = grp.items.some(it => it.id === currentProd);
+        const btns = grp.items.map(it => {
+          const detCls = it.isDet ? ' btn-det' : '';
+          const actCls = it.id === currentProd ? ' active' : '';
+          return `<button class="btn${detCls}${actCls}" data-prod="${it.id}" onclick="setProduct(this)">${it.name}</button>`;
+        }).join('');
+        return `<div class="prod-pod${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
+          <span class="pod-title">${grp.group}</span>${btns}
+        </div>`;
+      }).join('');
+    }
+
+    function buildGroupedSelectOptions() {
+      return PRODUCT_GROUPS.map(grp =>
+        `<optgroup label="${grp.group}">` +
+        grp.items.map(it => `<option value="${it.id}">${it.fullName}</option>`).join('') +
+        `</optgroup>`
+      ).join('');
+    }
+
     async function init() {
+      renderProductPods();
       try {
         const res = await fetch('manifest.json?t=' + Date.now());
         manifest = await res.json();
@@ -1128,11 +1210,10 @@ def build_frontend_html(dest_path):
         runSel.innerHTML = optionsHtml;
         runSel.value = currentRunId;
 
+        const groupedProdHtml = buildGroupedSelectOptions();
         ['pane1', 'pane2'].forEach(p => {
           document.getElementById(`${p}Run`).innerHTML = optionsHtml;
-          document.getElementById(`${p}Prod`).innerHTML = PRODUCTS.map(pr =>
-            `<option value="${pr.id}">${pr.name}</option>`
-          ).join('');
+          document.getElementById(`${p}Prod`).innerHTML = groupedProdHtml;
         });
 
         renderPeriodButtons(activeRun);
@@ -1235,9 +1316,8 @@ def build_frontend_html(dest_path):
     }
 
     function setProduct(btn) {
-      document.querySelectorAll('[data-prod]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
       currentProd = btn.getAttribute('data-prod');
+      renderProductPods();
       updateSingleViewer();
       updateNavButtons();
     }
