@@ -85,25 +85,27 @@ def build_synoptic_periods(init_dt):
 def is_ecmwf_step_ready(client, date_str, cycle_hr, stream, req_type, step_num):
     """Probes ECMWF Open Data to verify whether the cycle has disseminated through step_num."""
     probe_file = WORKDIR / f"probe_{stream}_{date_str}_{cycle_hr:02d}_f{step_num}.grib2"
+    req = {
+        "date": date_str,
+        "time": cycle_hr,
+        "stream": stream,
+        "type": req_type,
+        "levtype": "sfc",
+        "step": step_num,
+        "param": "tp",
+        "target": str(probe_file),
+    }
+    if req_type == "pf":
+        req["number"] = 1
     try:
-        client.retrieve(
-            date=date_str,
-            time=cycle_hr,
-            stream=stream,
-            type=req_type,
-            levtype="sfc",
-            step=step_num,
-            param="tp",
-            number=1 if req_type == "pf" else None,
-            target=str(probe_file),
-        )
+        client.retrieve(**req)
         ready = probe_file.exists() and probe_file.stat().st_size > 1000
     except Exception:
         ready = False
     finally:
         if probe_file.exists():
             probe_file.unlink()
-    return ready
+    return readyy
 
 
 def read_cycle_status(cycle_id):
@@ -664,7 +666,10 @@ def update_manifest_and_html():
     with open(OUTPUT_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 
-    build_frontend_html(OUTPUT_DIR / "index.html")
+    # Tell GitHub Pages to serve static PNGs/JSON directly without Jekyll processing
+    (OUTPUT_DIR / ".nojekyll").touch()
+
+    build_frontend_html(OUTPUT_DIR / "index.html"))
 
 
 def build_frontend_html(dest_path):
