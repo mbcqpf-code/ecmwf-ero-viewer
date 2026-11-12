@@ -4,6 +4,7 @@ import json
 import shutil
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,6 +35,8 @@ CLIMO_PATH = Path("data/era5_conus_pw_percentiles_1950_2025.nc")
 
 MAX_RUNS_TO_KEEP = 10
 MAX_NEW_ENS_RUNS_PER_JOB = 2
+DOWNLOAD_WORKERS = 4
+DATA_SOURCES = ["aws", "azure", "ecmwf"]
 
 LAT_NORTH, LAT_SOUTH = 50.0, 24.0
 LON_WEST, LON_EAST = -125.0, -66.0
@@ -45,9 +48,31 @@ CIRCULAR_FOOTPRINT_3D = ((x_g**2 + y_g**2) <= RADIUS_PTS**2).astype(np.uint8)[np
 
 PROJ = ccrs.LambertConformal(central_longitude=-97.5, central_latitude=38.5)
 
+
 # ==========================================
-# 2. DYNAMIC CYCLE & PERIOD RESOLVER
+# 2. MULTI-MIRROR RETRIEVER & CYCLE RESOLVER
 # ==========================================
+def retrieve_with_fallback(req_dict, target_path, resol="0p25"):
+    """
+    Retrieves GRIB2 subset trying AWS S3 Open Data first (fastest from GitHub Actions),
+    with automatic fallback to Azure and ECMWF portals.
+    """
+    target_path = Path(target_path)
+    last_err = None
+    for src in DATA_SOURCES:
+        try:
+            if target_path.exists():
+                target_path.unlink()
+            client = Client(source=src, model="ifs", resol=resol)
+            client.retrieve(**req_dict, target=str(target_path))
+            if target_path.exists() and target_path.stat().st_size > 1000:
+                return True
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Failed to retrieve {req_dict} across {DATA_SOURCES}: {last_err}")
+
+
 def build_synoptic_periods(init_dt):
     """
     Constructs Day 1-5 synoptic periods anchored strictly to 12Z-to-12Z valid windows:
@@ -82,8 +107,8 @@ def build_synoptic_periods(init_dt):
     return periods
 
 
-def is_ecmwf_step_ready(client, date_str, cycle_hr, stream, req_type, step_num):
-    """Probes ECMWF Open Data to verify whether the cycle has disseminated through step_num."""
+def is_ecmwf_step_ready(date_str, cycle_hr, stream, req_type, step_num, resol="0p25"):
+    """Probes Open Data mirrors to verify whether the cycle has disseminated through step_num."""
     probe_file = WORKDIR / f"probe_{stream}_{date_str}_{cycle_hr:02d}_f{step_num}.grib2"
     req = {
         "date": date_str,
@@ -93,13 +118,11 @@ def is_ecmwf_step_ready(client, date_str, cycle_hr, stream, req_type, step_num):
         "levtype": "sfc",
         "step": step_num,
         "param": "tp",
-        "target": str(probe_file),
     }
     if req_type == "pf":
         req["number"] = 1
     try:
-        client.retrieve(**req)
-        ready = probe_file.exists() and probe_file.stat().st_size > 1000
+        ready = retrieve_with_fallback(req, probe_file, resol=resol)
     except Exception:
         ready = False
     finally:
@@ -132,7 +155,7 @@ def write_cycle_status(cycle_id, ens_complete, det_complete):
         }, f, indent=2)
 
 
-def get_pending_and_available_cycles(client_ens, max_lookback_hours=36):
+def get_pending_and_available_cycles(max_lookback_hours=36):
     """
     Scans the last 36 hours for 00/06/12/18Z cycles where the 0.25° ensemble has
     finished through its Day 5 end step (126-144h) and has not yet been processed.
@@ -154,9 +177,9 @@ def get_pending_and_available_cycles(client_ens, max_lookback_hours=36):
             continue
 
         periods = build_synoptic_periods(cand)
-        req_end_step = periods[-1]["f_end"]  # 132 (00Z), 126 (06Z), 144 (12Z), 138 (18Z)
+        req_end_step = periods[-1]["f_end"]
 
-        if is_ecmwf_step_ready(client_ens, date_str, cycle_hour, "enfo", "pf", req_end_step):
+        if is_ecmwf_step_ready(date_str, cycle_hour, "enfo", "pf", req_end_step, resol="0p25"):
             pending.append(cand)
 
     pending.sort()
@@ -325,7 +348,23 @@ def compute_pw_percentile_rank(pw_fcst_2d, pct_vals, thresh_3d):
 # ==========================================
 # 5. ENSEMBLE (0.25°) & 9KM DETERMINISTIC ENGINES
 # ==========================================
-def process_ensemble_cycle(client_ens, init_dt, climo_ds):
+def _fetch_ens_step_files(date_str, cycle_hr, cycle_id, step):
+    sfc_file = WORKDIR / f"ens_sfc_{cycle_id}_f{step:03d}.grib2"
+    pl_file = WORKDIR / f"ens_pl_{cycle_id}_f{step:03d}.grib2"
+    retrieve_with_fallback(
+        {"date": date_str, "time": cycle_hr, "stream": "enfo", "type": "pf",
+         "levtype": "sfc", "step": step, "param": ["tp", "mucape", "tcwv"]},
+        sfc_file, resol="0p25"
+    )
+    retrieve_with_fallback(
+        {"date": date_str, "time": cycle_hr, "stream": "enfo", "type": "pf",
+         "levtype": "pl", "levelist": 850, "step": step, "param": ["u", "v", "q"]},
+        pl_file, resol="0p25"
+    )
+    return sfc_file, pl_file
+
+
+def process_ensemble_cycle(init_dt, climo_ds):
     cycle_id = init_dt.strftime("%Y%m%d_%H")
     date_str = init_dt.strftime("%Y%m%d")
     cycle_hr = init_dt.hour
@@ -345,90 +384,93 @@ def process_ensemble_cycle(client_ens, init_dt, climo_ds):
     lats, lons, lats_rad, lons_rad, cos_lat = None, None, None, None, None
     tp_prev = None
 
-    for step in all_steps:
-        t_s = time.time()
-        sfc_file = WORKDIR / f"ens_sfc_{cycle_id}_f{step:03d}.grib2"
-        pl_file = WORKDIR / f"ens_pl_{cycle_id}_f{step:03d}.grib2"
+    # Sliding-window parallel pre-fetch (4 workers) keeps network saturated while limiting disk/RAM
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+        futures = {}
+        # Prime initial batch of workers
+        for s in all_steps[:DOWNLOAD_WORKERS * 2]:
+            futures[s] = pool.submit(_fetch_ens_step_files, date_str, cycle_hr, cycle_id, s)
 
-        client_ens.retrieve(
-            date=date_str, time=cycle_hr, stream="enfo", type="pf",
-            levtype="sfc", step=step, param=["tp", "mucape", "tcwv"], target=str(sfc_file)
-        )
-        client_ens.retrieve(
-            date=date_str, time=cycle_hr, stream="enfo", type="pf",
-            levtype="pl", levelist=850, step=step, param=["u", "v", "q"], target=str(pl_file)
-        )
+        for idx, step in enumerate(all_steps):
+            t_s = time.time()
+            # Submit next step ahead so workers stay busy
+            ahead_idx = idx + DOWNLOAD_WORKERS * 2
+            if ahead_idx < len(all_steps):
+                ahead_step = all_steps[ahead_idx]
+                futures[ahead_step] = pool.submit(_fetch_ens_step_files, date_str, cycle_hr, cycle_id, ahead_step)
 
-        with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tp"}, "indexpath": ""}) as ds_tp:
-            w_lon = LON_WEST % 360.0 if ds_tp.longitude.max() > 180 else LON_WEST
-            e_lon = LON_EAST % 360.0 if ds_tp.longitude.max() > 180 else LON_EAST
-            tp_da = ds_tp["tp"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
-            if tp_da.longitude.max() > 180:
-                tp_da = tp_da.assign_coords(longitude=tp_da.longitude - 360.0)
+            sfc_file, pl_file = futures.pop(step).result()
 
-        with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "mucape"}, "indexpath": ""}) as ds_cape:
-            cape_da = ds_cape["mucape"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+            with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tp"}, "indexpath": ""}) as ds_tp:
+                w_lon = LON_WEST % 360.0 if ds_tp.longitude.max() > 180 else LON_WEST
+                e_lon = LON_EAST % 360.0 if ds_tp.longitude.max() > 180 else LON_EAST
+                tp_da = ds_tp["tp"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+                if tp_da.longitude.max() > 180:
+                    tp_da = tp_da.assign_coords(longitude=tp_da.longitude - 360.0)
 
-        with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tcwv"}, "indexpath": ""}) as ds_pw:
-            pw_da = ds_pw["tcwv"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+            with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "mucape"}, "indexpath": ""}) as ds_cape:
+                cape_da = ds_cape["mucape"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
 
-        with xr.open_dataset(pl_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa", "level": 850}, "indexpath": ""}) as ds_pl:
-            pl_sub = ds_pl[["u", "v", "q"]].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
-            q_gkg = pl_sub["q"].values.astype(np.float32) * 1000.0
-            u_ms = pl_sub["u"].values.astype(np.float32)
-            v_ms = pl_sub["v"].values.astype(np.float32)
+            with xr.open_dataset(sfc_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tcwv"}, "indexpath": ""}) as ds_pw:
+                pw_da = ds_pw["tcwv"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
 
-        sfc_file.unlink(missing_ok=True)
-        pl_file.unlink(missing_ok=True)
+            with xr.open_dataset(pl_file, engine="cfgrib", backend_kwargs={"filter_by_keys": {"typeOfLevel": "isobaricInhPa", "level": 850}, "indexpath": ""}) as ds_pl:
+                pl_sub = ds_pl[["u", "v", "q"]].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+                q_gkg = pl_sub["q"].values.astype(np.float32) * 1000.0
+                u_ms = pl_sub["u"].values.astype(np.float32)
+                v_ms = pl_sub["v"].values.astype(np.float32)
 
-        tp_curr = tp_da.values.astype(np.float32)
-        cape_curr = cape_da.values.astype(np.float32)
-        pw_curr = pw_da.values.astype(np.float32) / 25.4  # inches
+            sfc_file.unlink(missing_ok=True)
+            pl_file.unlink(missing_ok=True)
 
-        if lats is None:
-            lats = tp_da.latitude.values
-            lons = tp_da.longitude.values
-            lats_rad = np.deg2rad(lats)
-            lons_rad = np.deg2rad(lons)
-            cos_lat = np.cos(lats_rad)[np.newaxis, :, np.newaxis]
-            n_mem, n_lat, n_lon = tp_curr.shape
+            tp_curr = tp_da.values.astype(np.float32)
+            cape_curr = cape_da.values.astype(np.float32)
+            pw_curr = pw_da.values.astype(np.float32) / 25.4  # inches
+
+            if lats is None:
+                lats = tp_da.latitude.values
+                lons = tp_da.longitude.values
+                lats_rad = np.deg2rad(lats)
+                lons_rad = np.deg2rad(lons)
+                cos_lat = np.cos(lats_rad)[np.newaxis, :, np.newaxis]
+                n_mem, n_lat, n_lon = tp_curr.shape
+                for p in periods:
+                    period_state[p["id"]] = {
+                        "max_3h_qpf": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "max_cape": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "max_pw": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "imfc_24h": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "sum_qu": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "sum_qv": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "persist_hrs": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                    }
+
+            delta_3h = np.clip((tp_curr - tp_prev) * 39.3701, 0.0, None) if tp_prev is not None else None
+            tp_prev = tp_curr
+
+            qu = ndimage.gaussian_filter(q_gkg * u_ms, sigma=(0, 1.2, 1.2))
+            qv = ndimage.gaussian_filter(q_gkg * v_ms, sigma=(0, 1.2, 1.2))
+            div_qV = (np.gradient(qu, lons_rad, axis=2) + np.gradient(qv * cos_lat, lats_rad, axis=1)) / (R_EARTH * cos_lat)
+            mfc_hr = -div_qV * 3600.0
+            qV_mag = np.hypot(qu, qv)
+
             for p in periods:
-                period_state[p["id"]] = {
-                    "max_3h_qpf": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                    "max_cape": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                    "max_pw": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                    "imfc_24h": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                    "sum_qu": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                    "sum_qv": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                    "persist_hrs": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
-                }
+                st = period_state[p["id"]]
+                s0, s1 = p["f_start"], p["f_end"]
+                if s0 <= step <= s1:
+                    st["max_cape"] = np.maximum(st["max_cape"], cape_curr)
+                    st["max_pw"] = np.maximum(st["max_pw"], pw_curr)
 
-        delta_3h = np.clip((tp_curr - tp_prev) * 39.3701, 0.0, None) if tp_prev is not None else None
-        tp_prev = tp_curr
+                    w = 1.5 if (step == s0 or step == s1) else 3.0
+                    st["imfc_24h"] += np.maximum(0.0, mfc_hr) * w
+                    st["sum_qu"] += qu * w
+                    st["sum_qv"] += qv * w
+                    st["persist_hrs"] += np.where((qV_mag >= 150.0) & (mfc_hr >= 0.5), w, 0.0)
 
-        qu = ndimage.gaussian_filter(q_gkg * u_ms, sigma=(0, 1.2, 1.2))
-        qv = ndimage.gaussian_filter(q_gkg * v_ms, sigma=(0, 1.2, 1.2))
-        div_qV = (np.gradient(qu, lons_rad, axis=2) + np.gradient(qv * cos_lat, lats_rad, axis=1)) / (R_EARTH * cos_lat)
-        mfc_hr = -div_qV * 3600.0
-        qV_mag = np.hypot(qu, qv)
+                if delta_3h is not None and (s0 < step <= s1):
+                    st["max_3h_qpf"] = np.maximum(st["max_3h_qpf"], delta_3h)
 
-        for p in periods:
-            st = period_state[p["id"]]
-            s0, s1 = p["f_start"], p["f_end"]
-            if s0 <= step <= s1:
-                st["max_cape"] = np.maximum(st["max_cape"], cape_curr)
-                st["max_pw"] = np.maximum(st["max_pw"], pw_curr)
-
-                w = 1.5 if (step == s0 or step == s1) else 3.0
-                st["imfc_24h"] += np.maximum(0.0, mfc_hr) * w
-                st["sum_qu"] += qu * w
-                st["sum_qv"] += qv * w
-                st["persist_hrs"] += np.where((qV_mag >= 150.0) & (mfc_hr >= 0.5), w, 0.0)
-
-            if delta_3h is not None and (s0 < step <= s1):
-                st["max_3h_qpf"] = np.maximum(st["max_3h_qpf"], delta_3h)
-
-        print(f"  [0.25° ENS] Step F{step:03d} processed in {time.time() - t_s:.1f}s")
+            print(f"  [0.25° ENS] Step F{step:03d} ({idx + 1}/{len(all_steps)}) processed in {time.time() - t_s:.1f}s")
 
     pct_vals = climo_ds["percentile"].values
     init_lbl = init_dt.strftime("%Y%m%d %H") + "z"
@@ -460,7 +502,7 @@ def process_ensemble_cycle(client_ens, init_dt, climo_ds):
             f"{p_id}_qpf_p90.png", current_run_dir, plot_type="qpf"
         )
 
-        # Render placeholder for 9km deterministic QPF until the ~2-hr delayed 0.1° run arrives
+        # Placeholder for 9km deterministic QPF until the ~2-hr delayed 0.1° run arrives
         render_plot(
             None, lats, lons,
             f"ECMWF 9km (0.1°) {init_lbl}: 24-hr Maximum 3-Hourly QPF",
@@ -563,7 +605,17 @@ def process_ensemble_cycle(client_ens, init_dt, climo_ds):
     print(f"=== Completed 0.25° Ensemble {cycle_id} in {time.time() - t0:.1f}s ===")
 
 
-def process_deterministic_9km_cycle(client_det, init_dt):
+def _fetch_det_step_file(date_str, cycle_hr, cycle_id, step):
+    fname = WORKDIR / f"det_tp_{cycle_id}_f{step:03d}.grib2"
+    retrieve_with_fallback(
+        {"date": date_str, "time": cycle_hr, "stream": "oper", "type": "fc",
+         "levtype": "sfc", "step": step, "param": "tp"},
+        fname, resol="0p1"
+    )
+    return fname
+
+
+def process_deterministic_9km_cycle(init_dt):
     cycle_id = init_dt.strftime("%Y%m%d_%H")
     date_str = init_dt.strftime("%Y%m%d")
     cycle_hr = init_dt.hour
@@ -579,33 +631,34 @@ def process_deterministic_9km_cycle(client_det, init_dt):
     day_max_qpf = {}
     lats, lons, tp_prev = None, None, None
 
-    for step in all_steps:
-        fname = WORKDIR / f"det_tp_{cycle_id}_f{step:03d}.grib2"
-        client_det.retrieve(
-            date=date_str, time=cycle_hr, stream="oper", type="fc",
-            levtype="sfc", step=step, param="tp", target=str(fname)
-        )
-        with xr.open_dataset(fname, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tp"}, "indexpath": ""}) as ds:
-            w_lon = LON_WEST % 360.0 if ds.longitude.max() > 180 else LON_WEST
-            e_lon = LON_EAST % 360.0 if ds.longitude.max() > 180 else LON_EAST
-            tp_da = ds["tp"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
-            if tp_da.longitude.max() > 180:
-                tp_da = tp_da.assign_coords(longitude=tp_da.longitude - 360.0)
-        fname.unlink(missing_ok=True)
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+        futures = {
+            s: pool.submit(_fetch_det_step_file, date_str, cycle_hr, cycle_id, s)
+            for s in all_steps
+        }
+        for idx, step in enumerate(all_steps):
+            fname = futures.pop(step).result()
+            with xr.open_dataset(fname, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "tp"}, "indexpath": ""}) as ds:
+                w_lon = LON_WEST % 360.0 if ds.longitude.max() > 180 else LON_WEST
+                e_lon = LON_EAST % 360.0 if ds.longitude.max() > 180 else LON_EAST
+                tp_da = ds["tp"].sel(latitude=slice(LAT_NORTH, LAT_SOUTH), longitude=slice(w_lon, e_lon)).load()
+                if tp_da.longitude.max() > 180:
+                    tp_da = tp_da.assign_coords(longitude=tp_da.longitude - 360.0)
+            fname.unlink(missing_ok=True)
 
-        tp_curr = tp_da.values.astype(np.float32)
-        if lats is None:
-            lats = tp_da.latitude.values
-            lons = tp_da.longitude.values
-            for p in periods:
-                day_max_qpf[p["id"]] = np.zeros((len(lats), len(lons)), dtype=np.float32)
+            tp_curr = tp_da.values.astype(np.float32)
+            if lats is None:
+                lats = tp_da.latitude.values
+                lons = tp_da.longitude.values
+                for p in periods:
+                    day_max_qpf[p["id"]] = np.zeros((len(lats), len(lons)), dtype=np.float32)
 
-        if tp_prev is not None:
-            delta_3h = np.clip((tp_curr - tp_prev) * 39.3701, 0.0, None)
-            for p in periods:
-                if p["f_start"] < step <= p["f_end"]:
-                    day_max_qpf[p["id"]] = np.maximum(day_max_qpf[p["id"]], delta_3h)
-        tp_prev = tp_curr
+            if tp_prev is not None:
+                delta_3h = np.clip((tp_curr - tp_prev) * 39.3701, 0.0, None)
+                for p in periods:
+                    if p["f_start"] < step <= p["f_end"]:
+                        day_max_qpf[p["id"]] = np.maximum(day_max_qpf[p["id"]], delta_3h)
+            tp_prev = tp_curr
 
     init_lbl = init_dt.strftime("%Y%m%d %H") + "z"
     for p in periods:
@@ -666,9 +719,7 @@ def update_manifest_and_html():
     with open(OUTPUT_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 
-    # Tell GitHub Pages to serve static PNGs/JSON directly without Jekyll processing
     (OUTPUT_DIR / ".nojekyll").touch()
-
     build_frontend_html(OUTPUT_DIR / "index.html")
 
 
@@ -755,7 +806,6 @@ def build_frontend_html(dest_path):
     }
     .viewer-card img { width: 100%; height: auto; display: block; }
 
-    /* Modal Help Styling */
     .modal-overlay {
       display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
       background: rgba(0, 0, 0, 0.75); z-index: 9999; justify-content: center; align-items: center;
@@ -795,7 +845,6 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="toolbar" id="mainToolbar">
-    <!-- ROW 1: Temporal Controls (Model Run on left, Valid Period on right) -->
     <div class="row">
       <div class="btn-group">
         <b>Model Run:</b>
@@ -810,7 +859,6 @@ def build_frontend_html(dest_path):
       </div>
     </div>
 
-    <!-- ROW 2: Meteorological Products (Left) & Layout / Help Controls (Right) -->
     <div class="row" style="border-top: 1px solid var(--border); padding-top: 6px;">
       <div class="btn-group" id="productGroup">
         <b>Product:</b>
@@ -846,7 +894,6 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="viewer-container" id="viewerContainer">
-    <!-- PANE 1 -->
     <div class="viewer-card" id="cardPrimary">
       <div class="pane-toolbar" id="pane1Bar">
         <span style="font-weight:bold; color:#60a5fa;">Pane 1 (Left):</span>
@@ -859,7 +906,6 @@ def build_frontend_html(dest_path):
       <img id="imgPrimary" src="" alt="Primary IFS Graphic">
     </div>
 
-    <!-- PANE 2 -->
     <div class="viewer-card" id="cardSecondary" style="display:none;">
       <div class="pane-toolbar" id="pane2Bar">
         <span style="font-weight:bold; color:#f59e0b;">Pane 2 (Right):</span>
@@ -873,7 +919,6 @@ def build_frontend_html(dest_path):
     </div>
   </div>
 
-  <!-- HELP / PRODUCT GUIDE MODAL -->
   <div id="helpModal" class="modal-overlay" onclick="onModalOverlayClick(event)">
     <div class="modal-content" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -985,7 +1030,8 @@ def build_frontend_html(dest_path):
         runSel.value = currentRunId;
 
         ['pane1', 'pane2'].forEach(p => {
-          document.getElementById(`${p}Run`).innerHTML = optionsHtml; document.getElementById(`${p}Prod`).innerHTML = PRODUCTS.map(pr =>
+          document.getElementById(`${p}Run`).innerHTML = optionsHtml;
+          document.getElementById(`${p}Prod`).innerHTML = PRODUCTS.map(pr =>
             `<option value="${pr.id}">${pr.name}</option>`
           ).join('');
         });
@@ -1003,7 +1049,27 @@ def build_frontend_html(dest_path):
     function renderPeriodButtons(runObj) {
       const pBox = document.getElementById('periodButtons');
       pBox.innerHTML = runObj.periods.map(p =>
-        `<button class="btn ${p.id === currentPeriod ? 'active' : ''}" data-period="${p.id}" onclick="setPeriod('${p.id}')">${p.name}</button>` ).join(''); }  function initSplitScreen(activeRun) { document.getElementById('pane1Run').value = currentRunId; populatePeriodDropdown('pane1', activeRun); document.getElementById('pane1Period').value = currentPeriod; document.getElementById('pane1Prod').value = currentProd;  const secondaryRun = manifest.runs.length > 1 ? manifest.runs[1] : activeRun; document.getElementById('pane2Run').value = secondaryRun.id; populatePeriodDropdown('pane2', secondaryRun);  const matchP = secondaryRun.periods.find(p => p.valid_end === currentValidEnd); document.getElementById('pane2Period').value = matchP ? matchP.id : secondaryRun.periods[0].id; document.getElementById('pane2Prod').value = manifest.runs.length > 1 ? currentProd : 'qpf_det_9km'; }  function populatePeriodDropdown(panePrefix, runObj) { document.getElementById(`${panePrefix}Period`).innerHTML = runObj.periods.map(pr =>
+        `<button class="btn ${p.id === currentPeriod ? 'active' : ''}" data-period="${p.id}" onclick="setPeriod('${p.id}')">${p.name}</button>`
+      ).join('');
+    }
+
+    function initSplitScreen(activeRun) {
+      document.getElementById('pane1Run').value = currentRunId;
+      populatePeriodDropdown('pane1', activeRun);
+      document.getElementById('pane1Period').value = currentPeriod;
+      document.getElementById('pane1Prod').value = currentProd;
+
+      const secondaryRun = manifest.runs.length > 1 ? manifest.runs[1] : activeRun;
+      document.getElementById('pane2Run').value = secondaryRun.id;
+      populatePeriodDropdown('pane2', secondaryRun);
+
+      const matchP = secondaryRun.periods.find(p => p.valid_end === currentValidEnd);
+      document.getElementById('pane2Period').value = matchP ? matchP.id : secondaryRun.periods[0].id;
+      document.getElementById('pane2Prod').value = manifest.runs.length > 1 ? currentProd : 'qpf_det_9km';
+    }
+
+    function populatePeriodDropdown(panePrefix, runObj) {
+      document.getElementById(`${panePrefix}Period`).innerHTML = runObj.periods.map(pr =>
         `<option value="${pr.id}">${pr.name}</option>`
       ).join('');
     }
@@ -1052,7 +1118,67 @@ def build_frontend_html(dest_path):
     }
 
     function getImageUrl(runId, periodId, prod) {
-      return `runs/${runId}/${periodId}_${prod}.png`; }  function preloadRunImages(runId) { const runObj = manifest.runs.find(r => r.id === runId); if (!runObj) return;  PRODUCTS.forEach(p => { runObj.periods.forEach(pr => { const u = getImageUrl(runId, pr.id, p.id); if (!preloadedImages.has(u)) { const im = new Image(); im.src = u; preloadedImages.set(u, im); } }); }); }  function setProduct(btn) { document.querySelectorAll('[data-prod]').forEach(b => b.classList.remove('active')); btn.classList.add('active'); currentProd = btn.getAttribute('data-prod'); updateSingleViewer(); updateNavButtons(); }  function setPeriod(pId) { currentPeriod = pId; const activeRun = manifest.runs.find(r => r.id === currentRunId); if (activeRun) { const pObj = activeRun.periods.find(p => p.id === pId); if (pObj) currentValidEnd = pObj.valid_end; renderPeriodButtons(activeRun); } updateSingleViewer(); updateNavButtons(); }  function onMainRunChange() { changeRun(document.getElementById('runSelect').value, null); }  function stepRun(delta) { const curIdx = manifest.runs.findIndex(r => r.id === currentRunId); if (curIdx === -1) return;  const nextIdx = curIdx + delta; if (nextIdx < 0 \vert{}\vert{} nextIdx >= manifest.runs.length) return;  const candidateRun = manifest.runs[nextIdx]; const matchP = candidateRun.periods.find(p => p.valid_end === currentValidEnd); if (!matchP) return;  changeRun(candidateRun.id, matchP.id); }  function stepProduct(delta) { const prodIds = PRODUCTS.map(p => p.id); let idx = prodIds.indexOf(currentProd) + delta; if (idx < 0) idx = prodIds.length - 1; if (idx >= prodIds.length) idx = 0; const nextBtn = document.querySelector(`[data-prod="${prodIds[idx]}"]`);
+      return `runs/${runId}/${periodId}_${prod}.png`;
+    }
+
+    function preloadRunImages(runId) {
+      const runObj = manifest.runs.find(r => r.id === runId);
+      if (!runObj) return;
+
+      PRODUCTS.forEach(p => {
+        runObj.periods.forEach(pr => {
+          const u = getImageUrl(runId, pr.id, p.id);
+          if (!preloadedImages.has(u)) {
+            const im = new Image(); im.src = u; preloadedImages.set(u, im);
+          }
+        });
+      });
+    }
+
+    function setProduct(btn) {
+      document.querySelectorAll('[data-prod]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentProd = btn.getAttribute('data-prod');
+      updateSingleViewer();
+      updateNavButtons();
+    }
+
+    function setPeriod(pId) {
+      currentPeriod = pId;
+      const activeRun = manifest.runs.find(r => r.id === currentRunId);
+      if (activeRun) {
+        const pObj = activeRun.periods.find(p => p.id === pId);
+        if (pObj) currentValidEnd = pObj.valid_end;
+        renderPeriodButtons(activeRun);
+      }
+      updateSingleViewer();
+      updateNavButtons();
+    }
+
+    function onMainRunChange() {
+      changeRun(document.getElementById('runSelect').value, null);
+    }
+
+    function stepRun(delta) {
+      const curIdx = manifest.runs.findIndex(r => r.id === currentRunId);
+      if (curIdx === -1) return;
+
+      const nextIdx = curIdx + delta;
+      if (nextIdx < 0 || nextIdx >= manifest.runs.length) return;
+
+      const candidateRun = manifest.runs[nextIdx];
+      const matchP = candidateRun.periods.find(p => p.valid_end === currentValidEnd);
+      if (!matchP) return;
+
+      changeRun(candidateRun.id, matchP.id);
+    }
+
+    function stepProduct(delta) {
+      const prodIds = PRODUCTS.map(p => p.id);
+      let idx = prodIds.indexOf(currentProd) + delta;
+      if (idx < 0) idx = prodIds.length - 1;
+      if (idx >= prodIds.length) idx = 0;
+      const nextBtn = document.querySelector(`[data-prod="${prodIds[idx]}"]`);
       if (nextBtn) setProduct(nextBtn);
     }
 
@@ -1153,18 +1279,14 @@ def run_production():
     print("CHECKING FOR ECMWF IFS CYCLES TO PROCESS...")
     print("==========================================")
 
-    client_ens = Client(source="ecmwf", model="ifs", resol="0p25")
-    client_det = Client(source="ecmwf", model="ifs", resol="0p1")
-
     existing_dirs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()])
-    pending_cycles = get_pending_and_available_cycles(client_ens, max_lookback_hours=36)
+    pending_cycles = get_pending_and_available_cycles(max_lookback_hours=36)
 
     # First-run bootstrap: grab ONLY the single newest available cycle (no backfill)
     if not existing_dirs and pending_cycles:
         pending_cycles = [pending_cycles[-1]]
         print(f"Initial bootstrap run: selecting latest cycle {pending_cycles[0].strftime('%Y%m%d_%H')}")
     elif existing_dirs and pending_cycles:
-        # Only backfill cycles newer than the oldest retained cycle
         oldest_kept = datetime.strptime(existing_dirs[0], "%Y%m%d_%H").replace(tzinfo=timezone.utc)
         pending_cycles = [c for c in pending_cycles if c > oldest_kept]
         if pending_cycles:
@@ -1173,7 +1295,7 @@ def run_production():
     if pending_cycles:
         climo_ds = xr.open_dataset(CLIMO_PATH)
         for cand_dt in pending_cycles[:MAX_NEW_ENS_RUNS_PER_JOB]:
-            process_ensemble_cycle(client_ens, cand_dt, climo_ds)
+            process_ensemble_cycle(cand_dt, climo_ds)
         climo_ds.close()
     else:
         print("All recent available 0.25° ensemble cycles are already cached.")
@@ -1189,8 +1311,8 @@ def run_production():
         periods = build_synoptic_periods(init_dt)
         req_end_step = periods[-1]["f_end"]
 
-        if is_ecmwf_step_ready(client_det, init_dt.strftime("%Y%m%d"), init_dt.hour, "oper", "fc", req_end_step):
-            process_deterministic_9km_cycle(client_det, init_dt)
+        if is_ecmwf_step_ready(init_dt.strftime("%Y%m%d"), init_dt.hour, "oper", "fc", req_end_step, resol="0p1"):
+            process_deterministic_9km_cycle(init_dt)
         else:
             print(f"9km (0.1°) deterministic not yet ready through F{req_end_step:03d} for {cycle_id} (will check next run).")
 
