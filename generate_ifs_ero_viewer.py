@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. CONFIGURATION & DOMAIN GEOMETRY
 # ==========================================
-OUTPUT_DIR = Path("output")
+OUTPUT_DIR = Path("docs")
 RUNS_DIR = OUTPUT_DIR / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 WORKDIR = Path("./temp_download")
