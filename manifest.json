@@ -1,0 +1,44 @@
+{
+  "updated_utc": "2026-11-12 16:52 UTC",
+  "latest": "20261112_06",
+  "runs": [
+    {
+      "id": "20261112_06",
+      "label": "2026-11-12 06z",
+      "init": "2026-11-12T06:00:00Z",
+      "det_complete": true,
+      "periods": [
+        {
+          "id": "p1",
+          "name": "Ending 12Z Fri 11/13",
+          "valid_start": "2026-11-12T12:00:00Z",
+          "valid_end": "2026-11-13T12:00:00Z"
+        },
+        {
+          "id": "p2",
+          "name": "Ending 12Z Sat 11/14",
+          "valid_start": "2026-11-13T12:00:00Z",
+          "valid_end": "2026-11-14T12:00:00Z"
+        },
+        {
+          "id": "p3",
+          "name": "Ending 12Z Sun 11/15",
+          "valid_start": "2026-11-14T12:00:00Z",
+          "valid_end": "2026-11-15T12:00:00Z"
+        },
+        {
+          "id": "p4",
+          "name": "Ending 12Z Mon 11/16",
+          "valid_start": "2026-11-15T12:00:00Z",
+          "valid_end": "2026-11-16T12:00:00Z"
+        },
+        {
+          "id": "p5",
+          "name": "Ending 12Z Tue 11/17",
+          "valid_start": "2026-11-16T12:00:00Z",
+          "valid_end": "2026-11-17T12:00:00Z"
+        }
+      ]
+    }
+  ]
+}
