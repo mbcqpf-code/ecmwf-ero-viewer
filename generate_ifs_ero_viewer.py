@@ -669,7 +669,7 @@ def update_manifest_and_html():
     # Tell GitHub Pages to serve static PNGs/JSON directly without Jekyll processing
     (OUTPUT_DIR / ".nojekyll").touch()
 
-    build_frontend_html(OUTPUT_DIR / "index.html"))
+    build_frontend_html(OUTPUT_DIR / "index.html")
 
 
 def build_frontend_html(dest_path):
