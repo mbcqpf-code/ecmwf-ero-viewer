@@ -2,9 +2,8 @@ name: Update ECMWF IFS ERO Viewer
 
 on:
   schedule:
-    # Runs every 2 hours at minute 15 (00:15, 02:15, 04:15, ... UTC)
     - cron: '15 */2 * * *'
-  workflow_dispatch: # Allows manual one-click trigger from GitHub Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,14 +16,6 @@ jobs:
     steps:
       - name: Checkout main repository
         uses: actions/checkout@v4
-
-      - name: Restore existing gh-pages cache (output/runs)
-        run: |
-          git fetch origin gh-pages || true
-          mkdir -p output
-          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
-            git archive origin/gh-pages | tar -x -C output
-          fi
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -49,10 +40,15 @@ jobs:
         run: |
           python generate_ifs_ero_viewer.py
 
-      - name: Deploy output/ to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./output
-          force_orphan: true
-          commit_message: "Update IFS ERO graphics (${{ github.run_number }})"
+      - name: Commit and push updated docs/ to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          if ! git diff --staged --quiet; then
+            git commit -m "Update IFS ERO graphics (${{ github.run_number }})"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No new graphics to commit."
+          fi
