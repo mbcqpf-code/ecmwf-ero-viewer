@@ -105,7 +105,7 @@ def is_ecmwf_step_ready(client, date_str, cycle_hr, stream, req_type, step_num):
     finally:
         if probe_file.exists():
             probe_file.unlink()
-    return readyy
+    return ready
 
 
 def read_cycle_status(cycle_id):
