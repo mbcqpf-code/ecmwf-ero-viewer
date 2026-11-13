@@ -110,6 +110,9 @@
       margin-right: 1px;
       white-space: nowrap;
     }
+    .prod-pod.ffi-pod .pod-title {
+      color: #fbbf24;
+    }
     .prod-pod .btn {
       padding: 3px 8px;
       font-size: 11.5px;
@@ -130,6 +133,15 @@
       flex-wrap: wrap; gap: 6px;
     }
     .viewer-card img { width: 100%; height: auto; display: block; }
+    .img-fallback {
+      display: none;
+      padding: 80px 20px;
+      text-align: center;
+      color: var(--muted);
+      background: #0b1120;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
 
     /* Modal Help Styling */
     .modal-overlay {
@@ -208,7 +220,10 @@
           <select id="pane1Prod" onchange="updatePane1()"></select>
         </div>
       </div>
-      <img id="imgPrimary" src="" alt="Primary IFS Graphic">
+      <img id="imgPrimary" src="" alt="Primary IFS Graphic"
+           onload="this.style.display='block'; document.getElementById('errPrimary').style.display='none';"
+           onerror="this.style.display='none'; document.getElementById('errPrimary').style.display='block';">
+      <div id="errPrimary" class="img-fallback">Graphic not available for this archived cycle (select a newer run).</div>
     </div>
 
     <div class="viewer-card" id="cardSecondary" style="display:none;">
@@ -220,7 +235,10 @@
           <select id="pane2Prod" onchange="updatePane2()"></select>
         </div>
       </div>
-      <img id="imgSecondary" src="" alt="Secondary IFS Graphic">
+      <img id="imgSecondary" src="" alt="Secondary IFS Graphic"
+           onload="this.style.display='block'; document.getElementById('errSecondary').style.display='none';"
+           onerror="this.style.display='none'; document.getElementById('errSecondary').style.display='block';">
+      <div id="errSecondary" class="img-fallback">Graphic not available for this archived cycle (select a newer run).</div>
     </div>
   </div>
 
@@ -241,6 +259,19 @@
           </div>
           <div class="help-item">
             <b>9km Det:</b> High-resolution 0.1° (~9 km) deterministic IFS 24-hour maximum 3-hourly rainfall rate. Disseminated ~2 hours after the 0.25° ensemble and backfilled automatically.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🎯 FF Composite (Flash Flood Ingredient Index — FFI)</h4>
+          <div class="help-item">
+            <b>Formulation:</b> Computed member-by-member across each 24-hr (12Z–12Z) window by blending normalized environmental ingredients (60% weight) with model QPF response (40% weight): <code>FFI = (M × I × T)^0.60 × Q^0.40</code>, where <b>M</b> blends ERA5 climatological PW rarity and absolute PW depth (1.50" anchor), <b>I</b> scales MUCAPE (1000 J/kg anchor with 0.35 cool-season floor), <b>T</b> scales 24-hr integrated 850 hPa moisture flux convergence (20 g/kg anchor) plus a persistence bonus for anchored LLJs (≥9h), and <b>Q</b> scales 50-km 3-hr QPF (1.00"/3h anchor).
+          </div>
+          <div class="help-item">
+            <b>Mean &amp; 90th Pct:</b> Ensemble mean and 90th percentile FFI values (≥ 1.0 indicates notable multi-ingredient overlap; ≥ 2.0 indicates high-end/training overlap).
+          </div>
+          <div class="help-item">
+            <b>Prob ≥ 1.0 &amp; Prob ≥ 2.0:</b> Percentage of ensemble members reaching or exceeding FFI thresholds of 1.0 and 2.0.
           </div>
         </div>
 
@@ -300,6 +331,16 @@
         ]
       },
       {
+        group: 'FF Composite',
+        isFfi: true,
+        items: [
+          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean' },
+          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct' },
+          { id: 'ffi_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob FF Composite ≥ 1.0' },
+          { id: 'ffi_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob FF Composite ≥ 2.0' }
+        ]
+      },
+      {
         group: 'MUCAPE',
         items: [
           { id: 'cape_mean', name: 'Mean', fullName: 'MUCAPE Mean' },
@@ -337,12 +378,13 @@
       const grid = document.getElementById('productGrid');
       grid.innerHTML = PRODUCT_GROUPS.map((grp, gIdx) => {
         const hasActive = grp.items.some(it => it.id === currentProd);
+        const ffiCls = grp.isFfi ? ' ffi-pod' : '';
         const btns = grp.items.map(it => {
           const detCls = it.isDet ? ' btn-det' : '';
           const actCls = it.id === currentProd ? ' active' : '';
           return `<button class="btn${detCls}${actCls}" data-prod="${it.id}" onclick="setProduct(this)">${it.name}</button>`;
         }).join('');
-        return `<div class="prod-pod${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
+        return `<div class="prod-pod${ffiCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
           <span class="pod-title">${grp.group}</span>${btns}
         </div>`;
       }).join('');
