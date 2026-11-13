@@ -957,17 +957,21 @@ def build_frontend_html(dest_path):
       padding-top: 8px;
       display: flex;
       flex-wrap: wrap;
-      gap: 7px;
+      gap: 6px;
       align-items: stretch;
+    }
+    .pod-row-break {
+      flex-basis: 100%;
+      height: 0;
     }
     .prod-pod {
       background: var(--pod-bg);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 5px 8px;
+      padding: 4px 7px;
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       flex-wrap: wrap;
       transition: border-color 0.15s;
     }
@@ -976,12 +980,12 @@ def build_frontend_html(dest_path):
       background: #10192e;
     }
     .pod-title {
-      font-size: 10px;
+      font-size: 9.5px;
       font-weight: 800;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.4px;
       text-transform: uppercase;
       color: #60a5fa;
-      padding-right: 4px;
+      padding-right: 5px;
       border-right: 1px solid var(--border);
       margin-right: 1px;
       white-space: nowrap;
@@ -990,8 +994,8 @@ def build_frontend_html(dest_path):
       color: #fbbf24;
     }
     .prod-pod .btn {
-      padding: 3px 8px;
-      font-size: 11.5px;
+      padding: 3px 7px;
+      font-size: 11px;
     }
 
     /* Viewer Stage */
@@ -1139,19 +1143,6 @@ def build_frontend_html(dest_path):
         </div>
 
         <div class="help-section">
-          <h4>🎯 FF Composite (Flash Flood Ingredient Index — FFI)</h4>
-          <div class="help-item">
-            <b>Formulation:</b> Computed member-by-member across each 24-hr (12Z–12Z) window by blending normalized environmental ingredients (60% weight) with model QPF response (40% weight): <code>FFI = (M × I × T)^0.60 × Q^0.40</code>, where <b>M</b> blends ERA5 climatological PW rarity and absolute PW depth (1.50" anchor), <b>I</b> scales MUCAPE (1000 J/kg anchor with 0.35 cool-season floor), <b>T</b> scales 24-hr integrated 850 hPa moisture flux convergence (20 g/kg anchor) plus a persistence bonus for anchored LLJs (≥9h), and <b>Q</b> scales 50-km 3-hr QPF (1.00"/3h anchor).
-          </div>
-          <div class="help-item">
-            <b>Mean &amp; 90th Pct:</b> Ensemble mean and 90th percentile FFI values (≥ 1.0 indicates notable multi-ingredient overlap; ≥ 2.0 indicates high-end/training overlap).
-          </div>
-          <div class="help-item">
-            <b>Prob ≥ 1.0 &amp; Prob ≥ 2.0:</b> Percentage of ensemble members reaching or exceeding FFI thresholds of 1.0 and 2.0.
-          </div>
-        </div>
-
-        <div class="help-section">
           <h4>⚡ MUCAPE (24-hr Max Instability)</h4>
           <div class="help-item">
             <b>Mean &amp; 90th Pct:</b> Ensemble mean and 90th percentile of each member's 24-hour maximum Most Unstable CAPE (J/kg), highlighting both surface-based warm sectors and elevated nocturnal instability.
@@ -1175,6 +1166,19 @@ def build_frontend_html(dest_path):
           <h4>🌬️ 850 hPa Moisture Flux Convergence &amp; Transport</h4>
           <div class="help-item">
             <b>Mean &amp; 90th Pct:</b> Time-integrated positive 850 hPa Moisture Flux Convergence (g/kg) over 24 hours, overlaid with 24-hour vector-mean moisture transport (qV) arrows and magenta contours where ≥30% / ≥60% of members sustain strong convergent transport (|qV| ≥ 150 g/kg·m/s and MFC ≥ 0.5 g/kg/hr) for ≥9 hours—highlighting anchored LLJ noses favorable for training/backbuilding.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🎯 FF Composite (Experimental Flash Flood Ingredient Index — FFI)</h4>
+          <div class="help-item">
+            <b>What It Measures:</b> A dimensionless 24-hr (12Z–12Z) composite computed member-by-member by combining environmental ingredients (60% weight: PWAT rarity/depth, MUCAPE, and 24-hr integrated 850 hPa moisture convergence + persistence) with 50-km 3-hr QPF (40% weight).
+          </div>
+          <div class="help-item">
+            <b>Value Scale (General Guidance):</b> <b>&lt; 0.50</b> = marginal/isolated ingredients; <b>0.50–1.00</b> = developing or localized overlap; <b>1.00–2.00</b> = notable multi-ingredient overlap (anomalous moisture + lift + heavy QPF); <b>2.00–3.00</b> = high-end overlap typical of organized training/LLJ MCS setups; <b>≥ 3.00</b> = extreme ingredient alignment.
+          </div>
+          <div class="help-item">
+            <b>Products:</b> <b>Mean</b> and <b>90th Pct</b> show ensemble average and upper-end FFI values; <b>Prob ≥ 1.0</b> and <b>Prob ≥ 2.0</b> show the percentage of ensemble members reaching those thresholds.
           </div>
         </div>
       </div>
@@ -1207,27 +1211,10 @@ def build_frontend_html(dest_path):
         ]
       },
       {
-        group: 'FF Composite',
-        isFfi: true,
-        items: [
-          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean' },
-          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct' },
-          { id: 'ffi_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob FF Composite ≥ 1.0' },
-          { id: 'ffi_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob FF Composite ≥ 2.0' }
-        ]
-      },
-      {
         group: 'MUCAPE',
         items: [
           { id: 'cape_mean', name: 'Mean', fullName: 'MUCAPE Mean' },
           { id: 'cape_p90',  name: '90th Pct', fullName: 'MUCAPE 90th Pct' }
-        ]
-      },
-      {
-        group: '850 MFC',
-        items: [
-          { id: 'mfc850_mean', name: 'Mean', fullName: '850 MFC Mean' },
-          { id: 'mfc850_p90',  name: '90th Pct', fullName: '850 MFC 90th Pct' }
         ]
       },
       {
@@ -1239,11 +1226,29 @@ def build_frontend_html(dest_path):
       },
       {
         group: 'PWAT Climo (ERA5)',
+        breakAfter: true,
         items: [
           { id: 'pw_anom_mean', name: 'Mean Rank', fullName: 'PW Climo Rank (Mean)' },
           { id: 'pw_anom_p90',  name: '90th Rank', fullName: 'PW Climo Rank (90th)' },
           { id: 'pw_prob_p90',  name: 'Prob >90th', fullName: 'Prob PW > 90th Pct' },
           { id: 'pw_prob_p99',  name: 'Prob >99th', fullName: 'Prob PW > 99th Pct' }
+        ]
+      },
+      {
+        group: '850 MFC',
+        items: [
+          { id: 'mfc850_mean', name: 'Mean', fullName: '850 MFC Mean' },
+          { id: 'mfc850_p90',  name: '90th Pct', fullName: '850 MFC 90th Pct' }
+        ]
+      },
+      {
+        group: 'FF Composite',
+        isFfi: true,
+        items: [
+          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean' },
+          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct' },
+          { id: 'ffi_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob FF Composite ≥ 1.0' },
+          { id: 'ffi_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob FF Composite ≥ 2.0' }
         ]
       }
     ];
@@ -1260,9 +1265,10 @@ def build_frontend_html(dest_path):
           const actCls = it.id === currentProd ? ' active' : '';
           return `<button class="btn${detCls}${actCls}" data-prod="${it.id}" onclick="setProduct(this)">${it.name}</button>`;
         }).join('');
+        const rowBreak = grp.breakAfter ? '<div class="pod-row-break"></div>' : '';
         return `<div class="prod-pod${ffiCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
           <span class="pod-title">${grp.group}</span>${btns}
-        </div>`;
+        </div>${rowBreak}`;
       }).join('');
     }
 
