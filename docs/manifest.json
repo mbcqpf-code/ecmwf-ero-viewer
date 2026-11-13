@@ -1,7 +1,45 @@
 {
-  "updated_utc": "2026-11-13 06:51 UTC",
-  "latest": "20261112_18",
+  "updated_utc": "2026-11-13 12:20 UTC",
+  "latest": "20261113_00",
   "runs": [
+    {
+      "id": "20261113_00",
+      "label": "2026-11-13 00z",
+      "init": "2026-11-13T00:00:00Z",
+      "det_complete": true,
+      "periods": [
+        {
+          "id": "p1",
+          "name": "Ending 12Z Sat 11/14",
+          "valid_start": "2026-11-13T12:00:00Z",
+          "valid_end": "2026-11-14T12:00:00Z"
+        },
+        {
+          "id": "p2",
+          "name": "Ending 12Z Sun 11/15",
+          "valid_start": "2026-11-14T12:00:00Z",
+          "valid_end": "2026-11-15T12:00:00Z"
+        },
+        {
+          "id": "p3",
+          "name": "Ending 12Z Mon 11/16",
+          "valid_start": "2026-11-15T12:00:00Z",
+          "valid_end": "2026-11-16T12:00:00Z"
+        },
+        {
+          "id": "p4",
+          "name": "Ending 12Z Tue 11/17",
+          "valid_start": "2026-11-16T12:00:00Z",
+          "valid_end": "2026-11-17T12:00:00Z"
+        },
+        {
+          "id": "p5",
+          "name": "Ending 12Z Wed 11/18",
+          "valid_start": "2026-11-17T12:00:00Z",
+          "valid_end": "2026-11-18T12:00:00Z"
+        }
+      ]
+    },
     {
       "id": "20261112_18",
       "label": "2026-11-12 18z",
