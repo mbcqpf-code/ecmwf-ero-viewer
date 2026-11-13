@@ -83,7 +83,6 @@ def _build_candidate_urls(base_url, date_str, cycle_hr, resol, stream, step):
     prefix = f"{base_url}/{date_str}/{cycle_hr:02d}z/ifs/{resol}/{stream}/{date_str}{cycle_hr:02d}0000-{step}h-{stream}"
     if stream == "enfo":
         return [f"{prefix}-ef.grib2"]
-    # 0p1 oper splits surface into -oper-fc-sfc.grib2 (with -oper-fc.grib2 fallback)
     return [f"{prefix}-fc-sfc.grib2", f"{prefix}-fc.grib2"]
 
 
@@ -110,7 +109,6 @@ def _parse_index_byte_ranges(index_text, req_type, levtype, params, levelist=Non
         return []
 
     raw_ranges.sort()
-    # Coalesce strictly contiguous ranges (prev_end + 1 == next_start) to minimize HTTP requests
     coalesced = [raw_ranges[0]]
     for start, end in raw_ranges[1:]:
         prev_start, prev_end = coalesced[-1]
@@ -309,6 +307,11 @@ IMFC_COLORS = ["#e0f3db", "#ccebc5", "#a8ddb5", "#7bccc4", "#4eb3d3", "#2b8cbe",
 CMAP_IMFC = ListedColormap(IMFC_COLORS)
 NORM_IMFC = BoundaryNorm(IMFC_BOUNDS, CMAP_IMFC.N, extend="max")
 
+FFI_BOUNDS = [0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 2.50, 3.00, 4.00]
+FFI_COLORS = ["#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#fed976", "#feb24c", "#fd8d3c", "#f03b20", "#bd0026"]
+CMAP_FFI = ListedColormap(FFI_COLORS)
+NORM_FFI = BoundaryNorm(FFI_BOUNDS, CMAP_FFI.N, extend="max")
+
 
 def save_quantized_png(fig, out_path):
     fig.savefig(out_path, bbox_inches="tight")
@@ -339,6 +342,9 @@ def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir
     elif plot_type == "rank":
         cmap, norm, bounds, extend = CMAP_RANK, NORM_RANK, RANK_BOUNDS, "neither"
         tick_labels = [f"{b:g}%" for b in bounds]
+    elif plot_type == "ffi":
+        cmap, norm, bounds, extend = CMAP_FFI, NORM_FFI, FFI_BOUNDS, "max"
+        tick_labels = [f"{b:g}" for b in bounds]
     else:
         cmap, norm, bounds, extend = CMAP_PROB, NORM_PROB, PROB_BOUNDS, "max"
         tick_labels = [f"{int(b)}%" for b in bounds]
@@ -695,6 +701,47 @@ def process_ensemble_cycle(init_dt, climo_ds):
             f"{p_id}_mfc850_p90.png", current_run_dir
         )
 
+        # 6. Flash Flood Ingredient Composite (Member-by-Member FFI: Mean, 90th Pct, Prob >= 1.0, Prob >= 2.0)
+        m_climo = np.clip(st["max_pw"] / np.maximum(thresh_p90[np.newaxis, :, :], 0.25), 0.0, 1.6)
+        m_abs = np.clip(st["max_pw"] / 1.50, 0.4, 1.5)
+        term_m = 0.5 * m_climo + 0.5 * m_abs
+
+        term_i = np.clip(0.35 + 0.65 * np.sqrt(np.maximum(st["max_cape"], 0.0) / 1000.0), 0.35, 1.85)
+        term_t = np.clip(st["imfc_24h"] / 20.0, 0.0, 2.0) * (1.0 + 0.25 * np.clip(st["persist_hrs"] / 9.0, 0.0, 1.5))
+        term_q = np.clip(neigh_qpf / 1.00, 0.0, 2.5)
+
+        ffi_members = ((term_m * term_i * term_t) ** 0.60) * (term_q ** 0.40)
+
+        ffi_mean = ffi_members.mean(axis=0)
+        ffi_p90 = np.percentile(ffi_members, 90, axis=0)
+        ffi_prob1 = (ffi_members >= 1.0).mean(axis=0) * 100.0
+        ffi_prob2 = (ffi_members >= 2.0).mean(axis=0) * 100.0
+
+        render_plot(
+            np.where(ffi_mean >= 0.25, ffi_mean, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: Ensemble Mean Flash Flood Ingredient Index (FFI)",
+            sub_title, "Composite Index: PW Climo + MUCAPE + 850 IMFC + 50-km 3h QPF",
+            f"{p_id}_ffi_mean.png", current_run_dir, plot_type="ffi"
+        )
+        render_plot(
+            np.where(ffi_p90 >= 0.25, ffi_p90, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: 90th Percentile Flash Flood Ingredient Index (FFI)",
+            sub_title, "90th Percentile Composite Index (PW + MUCAPE + 850 IMFC + 3h QPF)",
+            f"{p_id}_ffi_p90.png", current_run_dir, plot_type="ffi"
+        )
+        render_plot(
+            np.where(ffi_prob1 >= 5.0, ffi_prob1, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: Probability of Flash Flood Ingredient Index ≥ 1.0",
+            sub_title, "Ensemble Probability of Notable Multi-Ingredient Overlap (FFI ≥ 1.0) (%)",
+            f"{p_id}_ffi_prob1.png", current_run_dir, plot_type="prob"
+        )
+        render_plot(
+            np.where(ffi_prob2 >= 5.0, ffi_prob2, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: Probability of Flash Flood Ingredient Index ≥ 2.0",
+            sub_title, "Ensemble Probability of High-End Flash Flood Overlap (FFI ≥ 2.0) (%)",
+            f"{p_id}_ffi_prob2.png", current_run_dir, plot_type="prob"
+        )
+
     del period_state
     gc.collect()
     write_cycle_status(cycle_id, ens_complete=True, det_complete=False)
@@ -935,6 +982,9 @@ def build_frontend_html(dest_path):
       margin-right: 1px;
       white-space: nowrap;
     }
+    .prod-pod.ffi-pod .pod-title {
+      color: #fbbf24;
+    }
     .prod-pod .btn {
       padding: 3px 8px;
       font-size: 11.5px;
@@ -955,6 +1005,15 @@ def build_frontend_html(dest_path):
       flex-wrap: wrap; gap: 6px;
     }
     .viewer-card img { width: 100%; height: auto; display: block; }
+    .img-fallback {
+      display: none;
+      padding: 80px 20px;
+      text-align: center;
+      color: var(--muted);
+      background: #0b1120;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
 
     /* Modal Help Styling */
     .modal-overlay {
@@ -1033,7 +1092,10 @@ def build_frontend_html(dest_path):
           <select id="pane1Prod" onchange="updatePane1()"></select>
         </div>
       </div>
-      <img id="imgPrimary" src="" alt="Primary IFS Graphic">
+      <img id="imgPrimary" src="" alt="Primary IFS Graphic"
+           onload="this.style.display='block'; document.getElementById('errPrimary').style.display='none';"
+           onerror="this.style.display='none'; document.getElementById('errPrimary').style.display='block';">
+      <div id="errPrimary" class="img-fallback">Graphic not available for this archived cycle (select a newer run).</div>
     </div>
 
     <div class="viewer-card" id="cardSecondary" style="display:none;">
@@ -1045,7 +1107,10 @@ def build_frontend_html(dest_path):
           <select id="pane2Prod" onchange="updatePane2()"></select>
         </div>
       </div>
-      <img id="imgSecondary" src="" alt="Secondary IFS Graphic">
+      <img id="imgSecondary" src="" alt="Secondary IFS Graphic"
+           onload="this.style.display='block'; document.getElementById('errSecondary').style.display='none';"
+           onerror="this.style.display='none'; document.getElementById('errSecondary').style.display='block';">
+      <div id="errSecondary" class="img-fallback">Graphic not available for this archived cycle (select a newer run).</div>
     </div>
   </div>
 
@@ -1066,6 +1131,19 @@ def build_frontend_html(dest_path):
           </div>
           <div class="help-item">
             <b>9km Det:</b> High-resolution 0.1° (~9 km) deterministic IFS 24-hour maximum 3-hourly rainfall rate. Disseminated ~2 hours after the 0.25° ensemble and backfilled automatically.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🎯 FF Composite (Flash Flood Ingredient Index — FFI)</h4>
+          <div class="help-item">
+            <b>Formulation:</b> Computed member-by-member across each 24-hr (12Z–12Z) window by blending normalized environmental ingredients (60% weight) with model QPF response (40% weight): <code>FFI = (M × I × T)^0.60 × Q^0.40</code>, where <b>M</b> blends ERA5 climatological PW rarity and absolute PW depth (1.50" anchor), <b>I</b> scales MUCAPE (1000 J/kg anchor with 0.35 cool-season floor), <b>T</b> scales 24-hr integrated 850 hPa moisture flux convergence (20 g/kg anchor) plus a persistence bonus for anchored LLJs (≥9h), and <b>Q</b> scales 50-km 3-hr QPF (1.00"/3h anchor).
+          </div>
+          <div class="help-item">
+            <b>Mean &amp; 90th Pct:</b> Ensemble mean and 90th percentile FFI values (≥ 1.0 indicates notable multi-ingredient overlap; ≥ 2.0 indicates high-end/training overlap).
+          </div>
+          <div class="help-item">
+            <b>Prob ≥ 1.0 &amp; Prob ≥ 2.0:</b> Percentage of ensemble members reaching or exceeding FFI thresholds of 1.0 and 2.0.
           </div>
         </div>
 
@@ -1125,6 +1203,16 @@ def build_frontend_html(dest_path):
         ]
       },
       {
+        group: 'FF Composite',
+        isFfi: true,
+        items: [
+          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean' },
+          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct' },
+          { id: 'ffi_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob FF Composite ≥ 1.0' },
+          { id: 'ffi_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob FF Composite ≥ 2.0' }
+        ]
+      },
+      {
         group: 'MUCAPE',
         items: [
           { id: 'cape_mean', name: 'Mean', fullName: 'MUCAPE Mean' },
@@ -1162,12 +1250,13 @@ def build_frontend_html(dest_path):
       const grid = document.getElementById('productGrid');
       grid.innerHTML = PRODUCT_GROUPS.map((grp, gIdx) => {
         const hasActive = grp.items.some(it => it.id === currentProd);
+        const ffiCls = grp.isFfi ? ' ffi-pod' : '';
         const btns = grp.items.map(it => {
           const detCls = it.isDet ? ' btn-det' : '';
           const actCls = it.id === currentProd ? ' active' : '';
           return `<button class="btn${detCls}${actCls}" data-prod="${it.id}" onclick="setProduct(this)">${it.name}</button>`;
         }).join('');
-        return `<div class="prod-pod${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
+        return `<div class="prod-pod${ffiCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
           <span class="pod-title">${grp.group}</span>${btns}
         </div>`;
       }).join('');
@@ -1451,7 +1540,7 @@ def build_frontend_html(dest_path):
 
 
 # ==========================================
-# 7. MAIN PRODUCTION ENGINE & BACKFILLER
+# 8. MAIN PRODUCTION ENGINE & BACKFILLER
 # ==========================================
 def run_production():
     print("==========================================")
