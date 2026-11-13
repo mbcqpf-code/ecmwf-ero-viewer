@@ -38,8 +38,8 @@ CLIMO_PATH = Path("data/era5_conus_pw_percentiles_1950_2025.nc")
 
 MAX_RUNS_TO_KEEP = 10
 MAX_NEW_ENS_RUNS_PER_JOB = 2
-STEP_WORKERS = 3       # Concurrent forecast steps
-RANGE_WORKERS = 8      # Concurrent byte-range reads per GRIB file
+STEP_WORKERS = 2       # Concurrent forecast steps (gentle burst concurrency avoids 503s)
+RANGE_WORKERS = 4      # Concurrent byte-range reads per GRIB file
 
 # Direct cloud mirrors (Google Cloud Storage primary, AWS S3 backup — bypasses data.ecmwf.int 503 limits)
 CLOUD_MIRRORS = [
@@ -61,12 +61,16 @@ PROJ = ccrs.LambertConformal(central_longitude=-97.5, central_latitude=38.5)
 def make_http_session():
     session = requests.Session()
     retry = Retry(
-        total=4,
-        backoff_factor=1.5,
-        status_forcelist=[429, 500, 502, 503, 504],
+        total=8,
+        connect=5,
+        read=5,
+        status=8,
+        backoff_factor=2.0,
+        status_forcelist=[408, 429, 500, 502, 503, 504],
         allowed_methods=["HEAD", "GET"],
+        respect_retry_after_header=True,
     )
-    adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=retry)
+    adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=retry)
     session.mount("https://", adapter)
     session.headers.update({"User-Agent": "ECMWF-IFS-ERO-Viewer/1.0"})
     return session
@@ -132,7 +136,7 @@ def fetch_grib_subset_direct(date_str, cycle_hr, resol, stream, req_type, step, 
         for grib_url in _build_candidate_urls(base_url, date_str, cycle_hr, resol, stream, step):
             idx_url = grib_url[:-6] + ".index"
             try:
-                r_idx = HTTP.get(idx_url, timeout=12)
+                r_idx = HTTP.get(idx_url, timeout=15)
                 if r_idx.status_code != 200:
                     continue
 
@@ -142,7 +146,7 @@ def fetch_grib_subset_direct(date_str, cycle_hr, resol, stream, req_type, step, 
 
                 def _get_chunk(byte_pair):
                     s, e = byte_pair
-                    resp = HTTP.get(grib_url, headers={"Range": f"bytes={s}-{e}"}, timeout=30)
+                    resp = HTTP.get(grib_url, headers={"Range": f"bytes={s}-{e}"}, timeout=35)
                     if resp.status_code not in (200, 206):
                         raise RuntimeError(f"HTTP {resp.status_code} on range {s}-{e}")
                     return resp.content
@@ -174,7 +178,7 @@ def is_ecmwf_step_ready(date_str, cycle_hr, stream, req_type, step_num, resol="0
         for grib_url in _build_candidate_urls(base_url, date_str, cycle_hr, resol, stream, step_num):
             idx_url = grib_url[:-6] + ".index"
             try:
-                r = HTTP.head(idx_url, timeout=8)
+                r = HTTP.head(idx_url, timeout=10)
                 if r.status_code == 200:
                     return True
             except Exception:
@@ -1565,9 +1569,13 @@ def run_production():
 
     if pending_cycles:
         climo_ds = xr.open_dataset(CLIMO_PATH)
-        for cand_dt in pending_cycles[:MAX_NEW_ENS_RUNS_PER_JOB]:
-            process_ensemble_cycle(cand_dt, climo_ds)
-        climo_ds.close()
+        try:
+            for cand_dt in pending_cycles[:MAX_NEW_ENS_RUNS_PER_JOB]:
+                process_ensemble_cycle(cand_dt, climo_ds)
+        except Exception as e:
+            print(f"Warning: cycle processing interrupted ({e}); will retry on next scheduled run.")
+        finally:
+            climo_ds.close()
     else:
         print("All recent available 0.25° ensemble cycles are already cached.")
 
