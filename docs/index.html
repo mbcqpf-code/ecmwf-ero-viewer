@@ -114,11 +114,14 @@
       margin-right: 1px;
       white-space: nowrap;
     }
+    .prod-pod.env-pod .pod-title {
+      color: #34d399;
+    }
     .prod-pod.ffi-pod .pod-title {
       color: #fbbf24;
     }
     .prod-pod .btn {
-      padding: 3px 7px;
+      padding: 3px 6.5px;
       font-size: 11px;
     }
 
@@ -294,15 +297,26 @@
         </div>
 
         <div class="help-section">
-          <h4>🎯 FF Composite (Experimental Flash Flood Ingredient Index — FFI)</h4>
+          <h4>🔥 850 hPa CAPE Flux Convergence &amp; Transport</h4>
           <div class="help-item">
-            <b>What It Measures:</b> A dimensionless 24-hr (12Z–12Z) composite computed member-by-member by combining environmental ingredients (60% weight: PWAT rarity/depth, MUCAPE, and 24-hr integrated 850 hPa moisture convergence + persistence) with 50-km 3-hr QPF (40% weight).
+            <b>Mean &amp; 90th Pct:</b> Time-integrated positive 850 hPa CAPE Flux Convergence (<code>-∇·(MUCAPE × V850)</code>, in kJ/kg) over 24 hours, overlaid with 24-hour vector-mean instability transport arrows (<code>MUCAPE × V850</code>). Isolates zones where low-level flow advects upstream instability into a lifting boundary while filtering out stable-to-unstable gradients.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🌿 Env Composite (Pure Environmental Index — FFEI, No QPF)</h4>
+          <div class="help-item">
+            <b>What It Measures:</b> A QPF-independent 24-hr (12Z–12Z) environmental composite computed member-by-member from raw PWAT, ERA5 PWAT anomaly, 24-hr integrated 850 hPa Moisture Flux Convergence (+ persistence), and 24-hr integrated 850 hPa CAPE Flux Convergence. Highlights favorable synoptic/mesoscale ingredients even where parameterized model QPF under-performs.
           </div>
           <div class="help-item">
-            <b>Value Scale (General Guidance):</b> <b>&lt; 0.50</b> = marginal/isolated ingredients; <b>0.50–1.00</b> = developing or localized overlap; <b>1.00–2.00</b> = notable multi-ingredient overlap (anomalous moisture + lift + heavy QPF); <b>2.00–3.00</b> = high-end overlap typical of organized training/LLJ MCS setups; <b>≥ 3.00</b> = extreme ingredient alignment.
+            <b>Value Scale (General Guidance):</b> <b>&lt; 0.50</b> = marginal/isolated ingredients; <b>0.50–1.00</b> = developing or localized overlap; <b>1.00–2.00</b> = notable multi-ingredient overlap; <b>2.00–3.00</b> = high-end overlap typical of organized training/LLJ MCS setups; <b>≥ 3.00</b> = extreme environmental alignment.
           </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🎯 FF Composite (Full Flash Flood Ingredient Index — FFI, With QPF)</h4>
           <div class="help-item">
-            <b>Products:</b> <b>Mean</b> and <b>90th Pct</b> show ensemble average and upper-end FFI values; <b>Prob ≥ 1.0</b> and <b>Prob ≥ 2.0</b> show the percentage of ensemble members reaching those thresholds.
+            <b>What It Measures:</b> Blends normalized environmental ingredients (60% weight: PWAT rarity/depth, MUCAPE, and 24-hr integrated 850 hPa moisture convergence + persistence) with 50-km 3-hr QPF (40% weight) across each 24-hr (12Z–12Z) window. Uses the same <b>0.50 / 1.00 / 2.00 / 3.00+</b> severity scale as the Env Composite.
           </div>
         </div>
       </div>
@@ -366,11 +380,28 @@
         ]
       },
       {
+        group: '850 CAPE FC',
+        items: [
+          { id: 'cfc850_mean', name: 'Mean', fullName: '850 CAPE FC Mean' },
+          { id: 'cfc850_p90',  name: '90th Pct', fullName: '850 CAPE FC 90th Pct' }
+        ]
+      },
+      {
+        group: 'Env Composite',
+        isEnv: true,
+        items: [
+          { id: 'ffei_mean',  name: 'Mean',       fullName: 'Env Composite Mean (No QPF)' },
+          { id: 'ffei_p90',   name: '90th Pct',   fullName: 'Env Composite 90th Pct (No QPF)' },
+          { id: 'ffei_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob Env Composite ≥ 1.0' },
+          { id: 'ffei_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob Env Composite ≥ 2.0' }
+        ]
+      },
+      {
         group: 'FF Composite',
         isFfi: true,
         items: [
-          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean' },
-          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct' },
+          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean (With QPF)' },
+          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct (With QPF)' },
           { id: 'ffi_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob FF Composite ≥ 1.0' },
           { id: 'ffi_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob FF Composite ≥ 2.0' }
         ]
@@ -383,14 +414,14 @@
       const grid = document.getElementById('productGrid');
       grid.innerHTML = PRODUCT_GROUPS.map((grp, gIdx) => {
         const hasActive = grp.items.some(it => it.id === currentProd);
-        const ffiCls = grp.isFfi ? ' ffi-pod' : '';
+        const podExtraCls = grp.isEnv ? ' env-pod' : (grp.isFfi ? ' ffi-pod' : '');
         const btns = grp.items.map(it => {
           const detCls = it.isDet ? ' btn-det' : '';
           const actCls = it.id === currentProd ? ' active' : '';
           return `<button class="btn${detCls}${actCls}" data-prod="${it.id}" onclick="setProduct(this)">${it.name}</button>`;
         }).join('');
         const rowBreak = grp.breakAfter ? '<div class="pod-row-break"></div>' : '';
-        return `<div class="prod-pod${ffiCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
+        return `<div class="prod-pod${podExtraCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
           <span class="pod-title">${grp.group}</span>${btns}
         </div>${rowBreak}`;
       }).join('');
