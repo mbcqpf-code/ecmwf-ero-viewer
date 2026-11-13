@@ -311,6 +311,11 @@ IMFC_COLORS = ["#e0f3db", "#ccebc5", "#a8ddb5", "#7bccc4", "#4eb3d3", "#2b8cbe",
 CMAP_IMFC = ListedColormap(IMFC_COLORS)
 NORM_IMFC = BoundaryNorm(IMFC_BOUNDS, CMAP_IMFC.N, extend="max")
 
+ICFC_BOUNDS = [0.5, 1.0, 2.0, 3.0, 4.5, 6.0, 8.0, 10.0, 12.5, 15.0]
+ICFC_COLORS = ["#f7fcb9", "#d9f0a3", "#addd8e", "#78c679", "#41ab5d", "#238443", "#feb24c", "#fd8d3c", "#f03b20", "#bd0026"]
+CMAP_ICFC = ListedColormap(ICFC_COLORS)
+NORM_ICFC = BoundaryNorm(ICFC_BOUNDS, CMAP_ICFC.N, extend="max")
+
 FFI_BOUNDS = [0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 2.50, 3.00, 4.00]
 FFI_COLORS = ["#c7e9b4", "#7fcdbb", "#41b6c4", "#1d91c0", "#fed976", "#feb24c", "#fd8d3c", "#f03b20", "#bd0026"]
 CMAP_FFI = ListedColormap(FFI_COLORS)
@@ -424,6 +429,51 @@ def render_mfc850_plot(imfc_data, mean_qu, mean_qv, prob_persist, lats, lons, ti
     cbar = fig.colorbar(sm, cax=cbar_ax, orientation="horizontal", extend="max")
     cbar.set_ticks(IMFC_BOUNDS)
     cbar.ax.set_xticklabels([f"{b}" for b in IMFC_BOUNDS], fontsize=9.5)
+    cbar.set_label(cbar_label, fontsize=11, fontweight="bold")
+
+    plt.subplots_adjust(bottom=0.12)
+    save_quantized_png(fig, out_dir / filename)
+
+
+def render_cfc850_plot(icfc_data, mean_cu, mean_cv, lats, lons, title, subtitle, cbar_label, filename, out_dir):
+    fig, ax = plt.subplots(figsize=(13, 8.5), dpi=110, subplot_kw={"projection": PROJ})
+    ax.add_feature(cfeature.LAND, facecolor="#f8f9fa")
+    ax.add_feature(cfeature.OCEAN, facecolor="#eef2f5")
+    ax.add_feature(cfeature.COASTLINE, linewidth=1.0, edgecolor="#333333")
+    ax.add_feature(cfeature.BORDERS, linewidth=0.9, edgecolor="#333333")
+    ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor="#666666", linestyle=":")
+    ax.set_extent([-120, -72, 22, 50], crs=ccrs.PlateCarree())
+
+    disp_icfc = np.where(icfc_data >= 0.5, icfc_data, np.nan)
+    if np.any(~np.isnan(disp_icfc)):
+        ax.contourf(lons, lats, disp_icfc, transform=ccrs.PlateCarree(),
+                    levels=ICFC_BOUNDS, cmap=CMAP_ICFC, norm=NORM_ICFC, extend="max")
+
+    skip = 6
+    LON_2D, LAT_2D = np.meshgrid(lons, lats)
+    mag = np.hypot(mean_cu, mean_cv)
+    q_mask = mag[::skip, ::skip] >= 4.0
+
+    quiv = ax.quiver(
+        LON_2D[::skip, ::skip][q_mask],
+        LAT_2D[::skip, ::skip][q_mask],
+        mean_cu[::skip, ::skip][q_mask],
+        mean_cv[::skip, ::skip][q_mask],
+        color="#111111", scale=320, width=0.0022, headwidth=3.8, headlength=4.5,
+        transform=ccrs.PlateCarree(), zorder=5
+    )
+    ax.quiverkey(
+        quiv, X=0.89, Y=1.02, U=20, label="20 kJ/kg·m/s", labelpos="E",
+        coordinates="axes", fontproperties={"size": 9, "weight": "bold"}
+    )
+
+    ax.set_title(f"{title}\n{subtitle}", fontsize=12, fontweight="bold", loc="left", linespacing=1.3)
+
+    cbar_ax = fig.add_axes([0.18, 0.06, 0.64, 0.025])
+    sm = plt.cm.ScalarMappable(cmap=CMAP_ICFC, norm=NORM_ICFC)
+    cbar = fig.colorbar(sm, cax=cbar_ax, orientation="horizontal", extend="max")
+    cbar.set_ticks(ICFC_BOUNDS)
+    cbar.ax.set_xticklabels([f"{b:g}" for b in ICFC_BOUNDS], fontsize=9.5)
     cbar.set_label(cbar_label, fontsize=11, fontweight="bold")
 
     plt.subplots_adjust(bottom=0.12)
@@ -549,16 +599,27 @@ def process_ensemble_cycle(init_dt, climo_ds):
                         "sum_qu": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
                         "sum_qv": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
                         "persist_hrs": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "icfc_24h": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "sum_cu_cape": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
+                        "sum_cv_cape": np.zeros((n_mem, n_lat, n_lon), dtype=np.float32),
                     }
 
             delta_3h = np.clip((tp_curr - tp_prev) * 39.3701, 0.0, None) if tp_prev is not None else None
             tp_prev = tp_curr
 
+            # 850 hPa Moisture Flux & Convergence
             qu = ndimage.gaussian_filter(q_gkg * u_ms, sigma=(0, 1.2, 1.2))
             qv = ndimage.gaussian_filter(q_gkg * v_ms, sigma=(0, 1.2, 1.2))
             div_qV = (np.gradient(qu, lons_rad, axis=2) + np.gradient(qv * cos_lat, lats_rad, axis=1)) / (R_EARTH * cos_lat)
             mfc_hr = -div_qV * 3600.0
             qV_mag = np.hypot(qu, qv)
+
+            # 850 hPa CAPE Flux & Convergence (kJ/kg)
+            cape_kj = np.maximum(cape_curr, 0.0) / 1000.0
+            cu_cape = ndimage.gaussian_filter(cape_kj * u_ms, sigma=(0, 1.2, 1.2))
+            cv_cape = ndimage.gaussian_filter(cape_kj * v_ms, sigma=(0, 1.2, 1.2))
+            div_capeV = (np.gradient(cu_cape, lons_rad, axis=2) + np.gradient(cv_cape * cos_lat, lats_rad, axis=1)) / (R_EARTH * cos_lat)
+            cfc_hr = -div_capeV * 3600.0
 
             for p in periods:
                 st = period_state[p["id"]]
@@ -572,6 +633,10 @@ def process_ensemble_cycle(init_dt, climo_ds):
                     st["sum_qu"] += qu * w
                     st["sum_qv"] += qv * w
                     st["persist_hrs"] += np.where((qV_mag >= 150.0) & (mfc_hr >= 0.5), w, 0.0)
+
+                    st["icfc_24h"] += np.maximum(0.0, cfc_hr) * w
+                    st["sum_cu_cape"] += cu_cape * w
+                    st["sum_cv_cape"] += cv_cape * w
 
                 if delta_3h is not None and (s0 < step <= s1):
                     st["max_3h_qpf"] = np.maximum(st["max_3h_qpf"], delta_3h)
@@ -705,16 +770,67 @@ def process_ensemble_cycle(init_dt, climo_ds):
             f"{p_id}_mfc850_p90.png", current_run_dir
         )
 
-        # 6. Flash Flood Ingredient Composite (Member-by-Member FFI: Mean, 90th Pct, Prob >= 1.0, Prob >= 2.0)
+        # 6. 850 hPa CAPE Flux Convergence & Mean CAPE*V (Mean & 90th Pct)
+        mean_cu_cape = (st["sum_cu_cape"] / 24.0).mean(axis=0)
+        mean_cv_cape = (st["sum_cv_cape"] / 24.0).mean(axis=0)
+
+        render_cfc850_plot(
+            st["icfc_24h"].mean(axis=0), mean_cu_cape, mean_cv_cape, lats, lons,
+            f"ECMWF IFS {init_lbl}: Ensemble Mean 24-hr Integrated 850 hPa CAPE Flux Convergence",
+            sub_title, "24-hr Integrated 850 hPa CAPE Flux Convergence (kJ/kg) & Vector-Mean CAPE·V",
+            f"{p_id}_cfc850_mean.png", current_run_dir
+        )
+        render_cfc850_plot(
+            np.percentile(st["icfc_24h"], 90, axis=0), mean_cu_cape, mean_cv_cape, lats, lons,
+            f"ECMWF IFS {init_lbl}: 90th Percentile 24-hr Integrated 850 hPa CAPE Flux Convergence",
+            sub_title, "90th Percentile 24-hr Integrated 850 hPa CAPE Flux Convergence (kJ/kg) & Vector-Mean CAPE·V",
+            f"{p_id}_cfc850_p90.png", current_run_dir
+        )
+
+        # Shared normalized terms for composites
         m_climo = np.clip(st["max_pw"] / np.maximum(thresh_p90[np.newaxis, :, :], 0.25), 0.0, 1.6)
         m_abs = np.clip(st["max_pw"] / 1.50, 0.4, 1.5)
         term_m = 0.5 * m_climo + 0.5 * m_abs
+        term_t_mfc = np.clip(st["imfc_24h"] / 20.0, 0.0, 2.0) * (1.0 + 0.25 * np.clip(st["persist_hrs"] / 9.0, 0.0, 1.5))
 
+        # 7. Pure Environmental Composite (FFEI: PW + PW Anomaly + 850 MFC + 850 CAPE FC — NO QPF)
+        term_t_cfc = np.clip(0.35 + 0.65 * np.sqrt(np.maximum(st["icfc_24h"], 0.0) / 4.0), 0.35, 1.85)
+        ffei_members = (term_m * term_t_mfc * term_t_cfc) ** 0.75
+
+        ffei_mean = ffei_members.mean(axis=0)
+        ffei_p90 = np.percentile(ffei_members, 90, axis=0)
+        ffei_prob1 = (ffei_members >= 1.0).mean(axis=0) * 100.0
+        ffei_prob2 = (ffei_members >= 2.0).mean(axis=0) * 100.0
+
+        render_plot(
+            np.where(ffei_mean >= 0.25, ffei_mean, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: Ensemble Mean Flash Flood Environment Index (FFEI — No QPF)",
+            sub_title, "Pure Environmental Composite: PW + PW Climo + 850 MFC + 850 CAPE FC",
+            f"{p_id}_ffei_mean.png", current_run_dir, plot_type="ffi"
+        )
+        render_plot(
+            np.where(ffei_p90 >= 0.25, ffei_p90, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: 90th Percentile Flash Flood Environment Index (FFEI — No QPF)",
+            sub_title, "90th Percentile Pure Environmental Composite (PW + PW Climo + 850 MFC + CAPE FC)",
+            f"{p_id}_ffei_p90.png", current_run_dir, plot_type="ffi"
+        )
+        render_plot(
+            np.where(ffei_prob1 >= 5.0, ffei_prob1, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: Probability of Flash Flood Environment Index ≥ 1.0",
+            sub_title, "Ensemble Probability of Notable Environmental Overlap (FFEI ≥ 1.0) (%)",
+            f"{p_id}_ffei_prob1.png", current_run_dir, plot_type="prob"
+        )
+        render_plot(
+            np.where(ffei_prob2 >= 5.0, ffei_prob2, np.nan), lats, lons,
+            f"ECMWF IFS {init_lbl}: Probability of Flash Flood Environment Index ≥ 2.0",
+            sub_title, "Ensemble Probability of High-End Environmental Overlap (FFEI ≥ 2.0) (%)",
+            f"{p_id}_ffei_prob2.png", current_run_dir, plot_type="prob"
+        )
+
+        # 8. Full Flash Flood Ingredient Composite (FFI: Environment + 50-km 3h QPF)
         term_i = np.clip(0.35 + 0.65 * np.sqrt(np.maximum(st["max_cape"], 0.0) / 1000.0), 0.35, 1.85)
-        term_t = np.clip(st["imfc_24h"] / 20.0, 0.0, 2.0) * (1.0 + 0.25 * np.clip(st["persist_hrs"] / 9.0, 0.0, 1.5))
         term_q = np.clip(neigh_qpf / 1.00, 0.0, 2.5)
-
-        ffi_members = ((term_m * term_i * term_t) ** 0.60) * (term_q ** 0.40)
+        ffi_members = ((term_m * term_i * term_t_mfc) ** 0.60) * (term_q ** 0.40)
 
         ffi_mean = ffi_members.mean(axis=0)
         ffi_p90 = np.percentile(ffi_members, 90, axis=0)
@@ -990,11 +1106,14 @@ def build_frontend_html(dest_path):
       margin-right: 1px;
       white-space: nowrap;
     }
+    .prod-pod.env-pod .pod-title {
+      color: #34d399;
+    }
     .prod-pod.ffi-pod .pod-title {
       color: #fbbf24;
     }
     .prod-pod .btn {
-      padding: 3px 7px;
+      padding: 3px 6.5px;
       font-size: 11px;
     }
 
@@ -1170,15 +1289,26 @@ def build_frontend_html(dest_path):
         </div>
 
         <div class="help-section">
-          <h4>🎯 FF Composite (Experimental Flash Flood Ingredient Index — FFI)</h4>
+          <h4>🔥 850 hPa CAPE Flux Convergence &amp; Transport</h4>
           <div class="help-item">
-            <b>What It Measures:</b> A dimensionless 24-hr (12Z–12Z) composite computed member-by-member by combining environmental ingredients (60% weight: PWAT rarity/depth, MUCAPE, and 24-hr integrated 850 hPa moisture convergence + persistence) with 50-km 3-hr QPF (40% weight).
+            <b>Mean &amp; 90th Pct:</b> Time-integrated positive 850 hPa CAPE Flux Convergence (<code>-∇·(MUCAPE × V850)</code>, in kJ/kg) over 24 hours, overlaid with 24-hour vector-mean instability transport arrows (<code>MUCAPE × V850</code>). Isolates zones where low-level flow advects upstream instability into a lifting boundary while filtering out stable-to-unstable gradients.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🌿 Env Composite (Pure Environmental Index — FFEI, No QPF)</h4>
+          <div class="help-item">
+            <b>What It Measures:</b> A QPF-independent 24-hr (12Z–12Z) environmental composite computed member-by-member from raw PWAT, ERA5 PWAT anomaly, 24-hr integrated 850 hPa Moisture Flux Convergence (+ persistence), and 24-hr integrated 850 hPa CAPE Flux Convergence. Highlights favorable synoptic/mesoscale ingredients even where parameterized model QPF under-performs.
           </div>
           <div class="help-item">
-            <b>Value Scale (General Guidance):</b> <b>&lt; 0.50</b> = marginal/isolated ingredients; <b>0.50–1.00</b> = developing or localized overlap; <b>1.00–2.00</b> = notable multi-ingredient overlap (anomalous moisture + lift + heavy QPF); <b>2.00–3.00</b> = high-end overlap typical of organized training/LLJ MCS setups; <b>≥ 3.00</b> = extreme ingredient alignment.
+            <b>Value Scale (General Guidance):</b> <b>&lt; 0.50</b> = marginal/isolated ingredients; <b>0.50–1.00</b> = developing or localized overlap; <b>1.00–2.00</b> = notable multi-ingredient overlap; <b>2.00–3.00</b> = high-end overlap typical of organized training/LLJ MCS setups; <b>≥ 3.00</b> = extreme environmental alignment.
           </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🎯 FF Composite (Full Flash Flood Ingredient Index — FFI, With QPF)</h4>
           <div class="help-item">
-            <b>Products:</b> <b>Mean</b> and <b>90th Pct</b> show ensemble average and upper-end FFI values; <b>Prob ≥ 1.0</b> and <b>Prob ≥ 2.0</b> show the percentage of ensemble members reaching those thresholds.
+            <b>What It Measures:</b> Blends normalized environmental ingredients (60% weight: PWAT rarity/depth, MUCAPE, and 24-hr integrated 850 hPa moisture convergence + persistence) with 50-km 3-hr QPF (40% weight) across each 24-hr (12Z–12Z) window. Uses the same <b>0.50 / 1.00 / 2.00 / 3.00+</b> severity scale as the Env Composite.
           </div>
         </div>
       </div>
@@ -1242,11 +1372,28 @@ def build_frontend_html(dest_path):
         ]
       },
       {
+        group: '850 CAPE FC',
+        items: [
+          { id: 'cfc850_mean', name: 'Mean', fullName: '850 CAPE FC Mean' },
+          { id: 'cfc850_p90',  name: '90th Pct', fullName: '850 CAPE FC 90th Pct' }
+        ]
+      },
+      {
+        group: 'Env Composite',
+        isEnv: true,
+        items: [
+          { id: 'ffei_mean',  name: 'Mean',       fullName: 'Env Composite Mean (No QPF)' },
+          { id: 'ffei_p90',   name: '90th Pct',   fullName: 'Env Composite 90th Pct (No QPF)' },
+          { id: 'ffei_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob Env Composite ≥ 1.0' },
+          { id: 'ffei_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob Env Composite ≥ 2.0' }
+        ]
+      },
+      {
         group: 'FF Composite',
         isFfi: true,
         items: [
-          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean' },
-          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct' },
+          { id: 'ffi_mean',  name: 'Mean',       fullName: 'FF Composite Mean (With QPF)' },
+          { id: 'ffi_p90',   name: '90th Pct',   fullName: 'FF Composite 90th Pct (With QPF)' },
           { id: 'ffi_prob1', name: 'Prob ≥ 1.0', fullName: 'Prob FF Composite ≥ 1.0' },
           { id: 'ffi_prob2', name: 'Prob ≥ 2.0', fullName: 'Prob FF Composite ≥ 2.0' }
         ]
@@ -1259,14 +1406,14 @@ def build_frontend_html(dest_path):
       const grid = document.getElementById('productGrid');
       grid.innerHTML = PRODUCT_GROUPS.map((grp, gIdx) => {
         const hasActive = grp.items.some(it => it.id === currentProd);
-        const ffiCls = grp.isFfi ? ' ffi-pod' : '';
+        const podExtraCls = grp.isEnv ? ' env-pod' : (grp.isFfi ? ' ffi-pod' : '');
         const btns = grp.items.map(it => {
           const detCls = it.isDet ? ' btn-det' : '';
           const actCls = it.id === currentProd ? ' active' : '';
           return `<button class="btn${detCls}${actCls}" data-prod="${it.id}" onclick="setProduct(this)">${it.name}</button>`;
         }).join('');
         const rowBreak = grp.breakAfter ? '<div class="pod-row-break"></div>' : '';
-        return `<div class="prod-pod${ffiCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
+        return `<div class="prod-pod${podExtraCls}${hasActive ? ' active-pod' : ''}" data-pod="${gIdx}">
           <span class="pod-title">${grp.group}</span>${btns}
         </div>${rowBreak}`;
       }).join('');
