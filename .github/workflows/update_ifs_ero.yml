@@ -1,8 +1,6 @@
 name: Update ECMWF IFS ERO Viewer
 
 on:
-  schedule:
-    - cron: '15 */2 * * *'
   workflow_dispatch:
 
 permissions:
