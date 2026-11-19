@@ -1,12 +1,12 @@
 {
-  "updated_utc": "2026-11-19 01:39 UTC",
+  "updated_utc": "2026-11-19 02:31 UTC",
   "latest": "20261118_18",
   "runs": [
     {
       "id": "20261118_18",
       "label": "2026-11-18 18z",
       "init": "2026-11-18T18:00:00Z",
-      "det_complete": false,
+      "det_complete": true,
       "periods": [
         {
           "id": "p1",
