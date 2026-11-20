@@ -1,7 +1,45 @@
 {
-  "updated_utc": "2026-11-20 10:01 UTC",
-  "latest": "20261120_00",
+  "updated_utc": "2026-11-20 13:57 UTC",
+  "latest": "20261120_06",
   "runs": [
+    {
+      "id": "20261120_06",
+      "label": "2026-11-20 06z",
+      "init": "2026-11-20T06:00:00Z",
+      "det_complete": false,
+      "periods": [
+        {
+          "id": "p1",
+          "name": "Ending 12Z Sat 11/21",
+          "valid_start": "2026-11-20T12:00:00Z",
+          "valid_end": "2026-11-21T12:00:00Z"
+        },
+        {
+          "id": "p2",
+          "name": "Ending 12Z Sun 11/22",
+          "valid_start": "2026-11-21T12:00:00Z",
+          "valid_end": "2026-11-22T12:00:00Z"
+        },
+        {
+          "id": "p3",
+          "name": "Ending 12Z Mon 11/23",
+          "valid_start": "2026-11-22T12:00:00Z",
+          "valid_end": "2026-11-23T12:00:00Z"
+        },
+        {
+          "id": "p4",
+          "name": "Ending 12Z Tue 11/24",
+          "valid_start": "2026-11-23T12:00:00Z",
+          "valid_end": "2026-11-24T12:00:00Z"
+        },
+        {
+          "id": "p5",
+          "name": "Ending 12Z Wed 11/25",
+          "valid_start": "2026-11-24T12:00:00Z",
+          "valid_end": "2026-11-25T12:00:00Z"
+        }
+      ]
+    },
     {
       "id": "20261120_00",
       "label": "2026-11-20 00z",
@@ -310,44 +348,6 @@
       "id": "20261118_00",
       "label": "2026-11-18 00z",
       "init": "2026-11-18T00:00:00Z",
-      "det_complete": true,
-      "periods": [
-        {
-          "id": "p1",
-          "name": "Ending 12Z Thu 11/19",
-          "valid_start": "2026-11-18T12:00:00Z",
-          "valid_end": "2026-11-19T12:00:00Z"
-        },
-        {
-          "id": "p2",
-          "name": "Ending 12Z Fri 11/20",
-          "valid_start": "2026-11-19T12:00:00Z",
-          "valid_end": "2026-11-20T12:00:00Z"
-        },
-        {
-          "id": "p3",
-          "name": "Ending 12Z Sat 11/21",
-          "valid_start": "2026-11-20T12:00:00Z",
-          "valid_end": "2026-11-21T12:00:00Z"
-        },
-        {
-          "id": "p4",
-          "name": "Ending 12Z Sun 11/22",
-          "valid_start": "2026-11-21T12:00:00Z",
-          "valid_end": "2026-11-22T12:00:00Z"
-        },
-        {
-          "id": "p5",
-          "name": "Ending 12Z Mon 11/23",
-          "valid_start": "2026-11-22T12:00:00Z",
-          "valid_end": "2026-11-23T12:00:00Z"
-        }
-      ]
-    },
-    {
-      "id": "20261117_18",
-      "label": "2026-11-17 18z",
-      "init": "2026-11-17T18:00:00Z",
       "det_complete": true,
       "periods": [
         {
